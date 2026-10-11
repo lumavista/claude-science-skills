@@ -13,8 +13,7 @@ the upstream repo past the 100 MB import limit.
 ## Provenance
 
 Most skills here come from the upstream repository above and carry its MIT
-licence; see `LICENSE-UPSTREAM` for the notice that licence requires to be
-distributed with them.
+licence, Copyright (c) 2025 K-Dense Inc.
 
 The following are **original work, not from upstream** — bugs, claims and
 scientific judgements in them are ours, not K-Dense-AI's:
