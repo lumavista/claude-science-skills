@@ -62,12 +62,43 @@ into a pipeline you intend to publish or productise.
 
 ## Workflow
 
+Run the steps through `scripts/epitope_triage.py`. It encodes the ordering, the
+column conventions and the safety filter, and it records tool versions in a
+sidecar `.meta.json` for reproducibility. Ad-hoc prediction code skips all of
+that. If a subcommand fails, report the error rather than reimplementing it.
+
+
 ### 1. Establish the antigen set
 
 Start from the actual protein sequences, with provenance. Record the strain or
 isolate, the accession, and the date. Resolve signal peptides, cleavage products
 and polyprotein boundaries before predicting — a peptide spanning a cleavage site
 cannot be presented from the mature protein.
+
+**Never write a sequence from memory.** Every residue must come from a retrieved
+record with an accession attached. A recalled sequence will be subtly wrong, and
+because every downstream step still runs cleanly on a wrong sequence, the error
+is invisible in the output and poisons the entire result set.
+
+If retrieval fails, stop and report the failure. Do not substitute a
+"canonical", "reference", "representative" or "well-known" sequence written
+out directly — those words are the tell that no record was retrieved. Say which
+database was queried, what came back, and ask the user for an accession or a
+FASTA file. Stopping costs minutes; a fabricated antigen costs the whole study.
+
+Before accepting a retrieved sequence, verify three things and state them:
+
+1. **It is the protein you asked for.** Check the record's name and organism.
+   Hits returning a different protein from the same organism, or the same
+   protein family from a different organism, are common when an ID is guessed
+   rather than looked up.
+2. **The length is right.** Confirm against what the protein should be.
+3. **The accession resolves.** Quote it. If the ID was guessed rather than
+   obtained from a search result, that is not provenance.
+
+Prefer the UniProt connector over constructing REST URLs by hand. If a
+connector returns something unexpected, that is a signal to search properly,
+not to try another guessed identifier.
 
 ```bash
 python scripts/epitope_triage.py prepare \

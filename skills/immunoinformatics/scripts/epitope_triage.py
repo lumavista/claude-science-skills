@@ -163,26 +163,41 @@ def cmd_mhc1(args: argparse.Namespace) -> None:
     if not usable:
         die("no requested alleles are supported")
 
+    # mhcflurry >=2.2 treats a LIST of alleles as one individual's genotype
+    # (max 6, collapsed to the best allele per peptide). For epitope triage we
+    # want a score per allele, so pass a dict with one sample per allele.
+    allele_samples = {a: [a] for a in usable}
+
     pep_list = sorted(peptides)
-    df = predictor.predict(peptides=pep_list, alleles=usable, verbose=0)
+    df = predictor.predict(peptides=pep_list, alleles=allele_samples, verbose=0)
+
+    def num(rec, key):
+        try:
+            return float(rec.get(key))
+        except (TypeError, ValueError):
+            return float("nan")
 
     rows = []
     for rec in df.to_dict("records"):
         pep = rec["peptide"]
+        if pep not in peptides:
+            continue
         source, pos = peptides[pep]
+        allele = rec.get("best_allele") or rec.get("sample_name")
+        score = num(rec, "presentation_score")
         rows.append([
-            pep, len(pep), source, pos, rec.get("best_allele"),
-            round(float(rec["presentation_score"]), 4),
-            round(float(rec.get("presentation_percentile", float("nan"))), 3),
-            round(float(rec.get("affinity", float("nan"))), 1),
+            pep, len(pep), source, pos, allele,
+            round(score, 4),
+            round(num(rec, "presentation_percentile"), 3),
+            round(num(rec, "affinity"), 1),
         ])
-    rows.sort(key=lambda r: -r[5])
+    rows.sort(key=lambda r: (r[5] != r[5], -r[5]))  # NaNs last
     if args.top:
         rows = rows[: args.top]
 
     out = Path(args.out)
     write_tsv(out, [
-        "peptide", "length", "source", "position", "best_allele",
+        "peptide", "length", "source", "position", "allele",
         "presentation_score", "presentation_percentile", "affinity_nM",
     ], rows)
     log(f"mhc1: {len(rows)} rows -> {out}  (rank on percentile, not affinity)")
