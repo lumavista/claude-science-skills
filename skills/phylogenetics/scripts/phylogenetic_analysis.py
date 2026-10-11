@@ -1,7 +1,12 @@
-"""MAFFT alignment, IQ-TREE 3 / FastTree inference, optional ETE3 rendering.
+"""MAFFT or pyfamsa alignment, IQ-TREE 3 / FastTree inference, ETE3 rendering.
 
 Python 3.12 with ete3==3.1.3 for tree summaries; PyQt5 for rendering.
 External executables: mafft plus iqtree3 (or --iqtree-bin iqtree2) / FastTree.
+
+Where MAFFT and IQ-TREE are unavailable (notably win-64, which has no bioconda
+builds and where vendor binaries fail to load under forced ASLR), use
+`--aligner famsa` with `--fasttree`. pyfamsa is a wheel, so it loads where a
+standalone executable does not. `--fasttree-bin` accepts an absolute path.
 """
 
 import argparse
@@ -22,13 +27,28 @@ MAFFT_METHODS = {
 }
 
 
-def check_dependencies(use_fasttree=False, iqtree_bin="iqtree3", fasttree_bin="FastTree"):
-    """Check only the selected inference backend, portably."""
-    required = ["mafft", fasttree_bin if use_fasttree else iqtree_bin]
-    missing = [tool for tool in required if shutil.which(tool) is None]
+def check_dependencies(aligner="mafft", use_fasttree=False, aligned=False,
+                       iqtree_bin="iqtree3", fasttree_bin="FastTree"):
+    """Check only what this run will actually invoke.
+
+    Requiring an aligner that the run never calls is the difference between a
+    usable fallback and an abort, so `aligned` and `aligner` both gate the
+    check. An absolute path is accepted in place of a name on PATH.
+    """
+    required = []
+    if not aligned and aligner == "mafft":
+        required.append("mafft")
+    required.append(fasttree_bin if use_fasttree else iqtree_bin)
+    missing = [tool for tool in required
+               if shutil.which(tool) is None and not Path(tool).is_file()]
     if missing:
         raise RuntimeError("Missing executables on PATH: " + ", ".join(missing))
-    print("[OK] All dependencies found.")
+    if not aligned and aligner == "famsa":
+        try:
+            import pyfamsa  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError("pyfamsa is not installed: pip install pyfamsa") from exc
+    print("[OK] Dependencies for this run found.")
 
 
 def count_sequences(fasta_file: str) -> int:
@@ -103,6 +123,63 @@ def run_mafft(input_fasta: str, output_fasta: str, n_threads=4, method="auto") -
     command = ["mafft", *MAFFT_METHODS[method], "--thread", str(n_threads),
                "--inputorder", str(Path(input_fasta).resolve())]
     return _run_to_file(command, output_fasta, "MAFFT")
+
+
+def _read_fasta_ordered(path):
+    """Return [(id, sequence)] in input order, for aligners that take sequences."""
+    chunks, order, name = {}, [], None
+    with open(path) as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                name = line[1:]
+                order.append(name)
+                chunks[name] = []
+            elif name is None:
+                raise ValueError("Sequence before the first FASTA header")
+            else:
+                chunks[name].append(line)
+    return [(name, "".join(chunks[name])) for name in order]
+
+
+def run_famsa(input_fasta: str, output_fasta: str, n_threads=1,
+              guide_tree="upgma", wrap=60) -> str:
+    """Progressive MSA through the pyfamsa wheel, for hosts without MAFFT.
+
+    FAMSA handles indels normally; this is a different aligner, not a MAFFT
+    emulation, and must be named with its version in any methods section.
+    Output preserves input order, matching MAFFT's --inputorder.
+    """
+    from pyfamsa import Aligner, Sequence
+    if Path(input_fasta).resolve() == Path(output_fasta).resolve():
+        raise ValueError("Alignment output must differ from input")
+    if n_threads < 1:
+        raise ValueError("Threads must be positive")
+    entries = _read_fasta_ordered(input_fasta)
+    alignment = Aligner(guide_tree=guide_tree, threads=n_threads).align(
+        [Sequence(name.encode(), sequence.encode()) for name, sequence in entries])
+    aligned = {record.id.decode(): record.sequence.decode() for record in alignment}
+    if len(aligned) != len(entries):
+        raise RuntimeError(
+            f"FAMSA returned {len(aligned)} sequences for {len(entries)} inputs")
+    output = Path(output_fasta)
+    with tempfile.NamedTemporaryFile(mode="w", dir=output.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            for name, _ in entries:
+                sequence = aligned[name]
+                handle.write(f">{name}\n")
+                for start in range(0, len(sequence), wrap):
+                    handle.write(sequence[start:start + wrap] + "\n")
+            handle.flush()
+            os.replace(temporary, output)
+        finally:
+            temporary.unlink(missing_ok=True)
+    print(f"[OK] FAMSA alignment: {output} ({len(aligned)} sequences, "
+          f"guide tree {guide_tree}, threads {n_threads})")
+    return str(output)
 
 
 def run_iqtree(aligned_fasta: str, prefix: str, seq_type="nt", bootstrap=1000,
@@ -243,6 +320,8 @@ def main():
     root = parser.add_mutually_exclusive_group()
     root.add_argument("--outgroup", help="One taxon ID; validate its biological suitability")
     root.add_argument("--midpoint", action="store_true", help="Midpoint-root the display only")
+    parser.add_argument("--aligner", default="mafft", choices=["mafft", "famsa"],
+                        help="famsa uses the pyfamsa wheel where MAFFT is unavailable")
     parser.add_argument("--mafft-method", default="auto", choices=list(MAFFT_METHODS))
     parser.add_argument("--aligned", action="store_true", help="Use a reviewed MSA without realignment")
     parser.add_argument("--no-visualization", action="store_true")
@@ -256,18 +335,40 @@ def main():
             raise ValueError(f"Outgroup not found: {args.outgroup}")
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
+    check_dependencies(args.aligner, args.fasttree, args.aligned,
+                       args.iqtree_bin, args.fasttree_bin)
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     prefix = str(Path(args.output_dir) / Path(args.input).stem)
-    aligned = args.input if args.aligned else run_mafft(
-        args.input, f"{prefix}_aligned.fasta", args.threads, args.mafft_method)
+    if args.aligned:
+        aligned = args.input
+    elif args.aligner == "famsa":
+        aligned = run_famsa(args.input, f"{prefix}_aligned.fasta", args.threads)
+    else:
+        aligned = run_mafft(args.input, f"{prefix}_aligned.fasta",
+                            args.threads, args.mafft_method)
     validated = validate_fasta(aligned, args.type, aligned=True)
     if set(validated) != set(records):
-        raise RuntimeError("Alignment changed the taxon IDs")
+        lost = sorted(set(records) - set(validated))
+        gained = sorted(set(validated) - set(records))
+        raise RuntimeError(
+            f"Alignment changed the taxon set: {len(records)} in, {len(validated)} out; "
+            f"missing {lost[:10]}; unexpected {gained[:10]}")
+    print(f"[OK] Sequence accounting: {len(records)} input, {len(validated)} aligned")
     if args.fasttree:
         tree_file = run_fasttree(aligned, f"{prefix}.tree", args.type, args.fasttree_bin)
     else:
         tree_file = run_iqtree(aligned, prefix, args.type, args.bootstrap, args.threads,
                               args.outgroup, args.iqtree_bin, args.model, args.seed, args.redo)
+    try:
+        leaves = set(load_tree(tree_file).get_leaf_names())
+    except Exception as exc:                      # ete3 absent or unparsable tree
+        print(f"[WARN] Could not count tree leaves ({exc}); verify the taxon set manually")
+    else:
+        if leaves != set(records):
+            raise RuntimeError(
+                f"Tree taxon set differs from input: {len(records)} input, "
+                f"{len(leaves)} leaves; missing {sorted(set(records) - leaves)[:10]}")
+        print(f"[OK] Tree contains all {len(leaves)} input taxa")
     if not args.no_visualization:
         visualize_tree(tree_file, f"{prefix}_tree.png", outgroup=args.outgroup, midpoint=args.midpoint)
     tree_summary(tree_file)

@@ -1,12 +1,12 @@
 ---
 name: phylogenetics
-description: Builds and analyzes phylogenetic trees using MAFFT multiple sequence alignment, IQ-TREE maximum likelihood with ModelFinder and branch support, and FastTree approximate inference. Uses ETE3 for tree summaries and visualization. Applies to homologous nucleotide or protein sequences, microbial gene trees, protein families, and cautiously interpreted dated phylogenies.
+description: Builds and analyzes phylogenetic trees using MAFFT or pyfamsa multiple sequence alignment, IQ-TREE maximum likelihood with ModelFinder and branch support, and FastTree approximate inference. Uses ETE3 for tree summaries and visualization. Applies to homologous nucleotide or protein sequences, microbial gene trees, protein families, and cautiously interpreted dated phylogenies.
 license: Unknown
-compatibility: Requires MAFFT and IQ-TREE 3 or FastTree executables. Optional tree summaries use Python 3.12 and ete3 3.1.3; rendering also needs PyQt5. Optional trimming needs trimAl. Network access is required for installation, not local inference.
+compatibility: Requires MAFFT and IQ-TREE 3 or FastTree executables on Linux/macOS. On Windows, MAFFT, IQ-TREE and trimAl are unavailable in practice (no bioconda win-64 builds; vendor binaries fail to load under forced ASLR) — use pyfamsa for alignment and FastTree for inference. Optional tree summaries use Python 3.12 and ete3 3.1.3; rendering also needs PyQt5. Network access is required for installation, not local inference.
 metadata:
-  version: "1.5"
+  version: "1.6"
   skill-author: Kuan-lin Huang
-  last-reviewed: "2026-10-01"
+  last-reviewed: "2026-10-11"
 ---
 
 # Phylogenetics
@@ -39,6 +39,52 @@ uv pip install --python .venv-phylo/bin/python ete3==3.1.3 numpy six
 # Optional rendering backend; it can require a working Qt platform plugin.
 uv pip install --python .venv-phylo/bin/python PyQt5
 ```
+
+**Verify that each executable launches, not merely that the environment built.**
+A solver that cannot satisfy a spec may report the environment as partially
+available and drop it silently; the failure then surfaces much later as a
+missing-command error attributed to the wrong cause. Print the version of every
+executable before using it.
+
+### Platform availability
+
+The line above is a Linux/macOS command. bioconda publishes no win-64 builds of
+MAFFT, IQ-TREE, FastTree or trimAl, so on Windows all four specs are dropped.
+Vendor-supplied Windows binaries are not a general substitute either: MAFFT,
+MUSCLE, IQ-TREE and trimAl ship non-relocatable PE images
+(`DllCharacteristics 0x8120`, no `.reloc` section) and fail to load with
+`WinError 623` wherever forced ASLR is in effect, which includes sandboxed
+execution environments. Such binaries carry no relocation data and cannot be
+repaired with `editbin /DYNAMICBASE`. Before investing in any Windows binary,
+read its PE header and confirm `DYNAMICBASE` and a base-relocation directory;
+FastTree 2.2.0 passes this check, which is why it runs where the others do not.
+
+Compiled **Python extension modules are built with ASLR enabled by default**, so
+a pip wheel loads where a standalone executable does not. On Windows, prefer a
+wheel-based aligner:
+
+```bash
+# Alignment and pairwise work, all with win_amd64 wheels.
+pip install pyfamsa pyhmmer parasail biopython
+```
+
+| Role | Linux/macOS | Windows |
+|---|---|---|
+| MSA | MAFFT | `pyfamsa` (FAMSA) |
+| Profile alignment | HMMER | `pyhmmer` |
+| ML inference | IQ-TREE | FastTree only |
+| Pairwise | — | `parasail`, Biopython `PairwiseAligner` |
+| Trimming | trimAl | no wheel; filter columns in Biopython |
+
+On Windows the venv interpreter is `.venv-phylo\Scripts\python.exe`, not
+`.venv-phylo/bin/python`. If a conda `activate.d` directory is read-only,
+invoke executables by absolute path rather than attempting to install a PATH
+hook.
+
+Losing IQ-TREE on Windows costs ModelFinder, ultrafast bootstrap and SH-aLRT;
+FastTree's approximate search and SH-like local supports are the ceiling there.
+State that limitation in any write-up rather than letting the reader assume a
+full ML analysis.
 
 The helper defaults to `iqtree3` and `FastTree`; use `--iqtree-bin iqtree2` for an
 existing IQ-TREE 2 installation, or `--fasttree-bin fasttree` if that is the
@@ -80,9 +126,40 @@ mafft --retree 2 --maxiterate 0 --thread 1 --inputorder sequences.fasta > fftns.
 criterion. Single-thread runs simplify reproducibility; MAFFT iterative refinement
 with multiple threads can produce different results between runs.
 
+Where MAFFT is unavailable, align with `pyfamsa`. FAMSA is a progressive
+aligner designed for large families; it handles indels normally and returns
+objects in process, with no subprocess or file round-trip:
+
+```python
+from Bio import SeqIO
+from pyfamsa import Aligner, Sequence
+
+seqs = [Sequence(rec.id.encode(), str(rec.seq).encode())
+        for rec in SeqIO.parse("sequences.fasta", "fasta")]
+aligner = Aligner(guide_tree="upgma", threads=1)
+msa = aligner.align(seqs)
+# Write FASTA for FastTree, then confirm the count matches the input.
+```
+
+Set `threads=1` for reproducibility, for the same reason as MAFFT. Name FAMSA
+and its version in the methods — a wheel-based aligner is still an aligner
+choice that changes the alignment, and "aligned in Python" is not a method.
+
+**Reference-anchored alternatives are not multiple sequence alignments.**
+Projecting each sequence onto one reference's coordinates by pairwise alignment
+is acceptable only for sequences verified to be indel-free and length-uniform,
+where column correspondence is unambiguous and the result is exact. The moment
+indels are present, gaps placed independently per sequence are inconsistent
+between sequences, and the matrix must not be described as an MSA. Verify
+indel-freedom and report the evidence before relying on this shortcut; prefer a
+real aligner whenever one is available.
+
 Trimming is optional and must be justified by alignment quality, not assumed to
-improve every tree. The following trimAl command is documentation-checked and
-illustrative; trimAl was not installed for this review:
+improve every tree. No `pytrimal` wheel exists for win-64; where trimAl is
+unavailable, filter columns by gap fraction and occupancy directly in Biopython
+and record the rule applied. The following trimAl command is
+documentation-checked and illustrative; trimAl was not installed for this
+review:
 
 ```bash
 trimal -in aligned.fasta -out trimmed.fasta -automated1 -fasta
@@ -107,6 +184,14 @@ python scripts/phylogenetic_analysis.py aligned.fasta --aligned --type nt \
 python scripts/phylogenetic_analysis.py proteins.fasta --type aa --fasttree \
   --threads 1 --output-dir fast_protein --no-visualization
 ```
+
+Where IQ-TREE is unavailable, align separately (MAFFT or `pyfamsa`) and run the
+helper on the reviewed alignment with `--aligned --fasttree`, which is the only
+path the helper can take without the MAFFT and IQ-TREE executables.
+
+Account for every input sequence through alignment and inference, and report any
+that were dropped. A silently shortened alignment produces a clean-looking tree
+of the wrong taxon set, and the count is the cheapest place to catch it.
 
 The standard IQ-TREE command uses `-m MFP` (ModelFinder including FreeRate
 models), `-B 1000` (UFBoot) and `--alrt 1000`. `-m TEST` remains supported but
@@ -175,3 +260,5 @@ that a viewer retains the support labels and branch-length scale.
 - [FastTree manual](https://morgannprice.github.io/fasttree/)
 - [ETE3 tree parsing](https://etetoolkit.org/docs/latest/tutorial/tutorial_trees.html) and [drawing](https://etetoolkit.org/docs/latest/tutorial/tutorial_drawing.html)
 - [trimAl manual](https://vicfero.github.io/trimal/)
+- [pyfamsa documentation](https://pyfamsa.readthedocs.io/en/stable/) and [source](https://github.com/althonos/pyfamsa/); FAMSA — Deorowicz, Debudaj-Grabysz & Gudyś, *Scientific Reports* 2016
+- [pyhmmer documentation](https://pyhmmer.readthedocs.io/en/stable/)

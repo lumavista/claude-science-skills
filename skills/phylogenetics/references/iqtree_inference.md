@@ -7,6 +7,17 @@ partition commands were exercised on small synthetic inputs. Codon inference,
 LSD2 dating, sCF, standard bootstrap and `-bnni` examples are **illustrative,
 documentation/source-checked**, not executed validation on biological datasets.
 
+> **Availability.** Everything in this reference requires an IQ-TREE
+> executable. There is no win-64 bioconda build, and the vendor Windows
+> binaries fail to load under forced ASLR, so on Windows none of it is
+> reachable — see the platform table in `SKILL.md`. FastTree is the only
+> inference backend available there, and it offers no equivalent of
+> ModelFinder, ultrafast bootstrap, SH-aLRT, partitioning, concordance
+> factors, ancestral reconstruction or dating. Do not translate a plan written
+> from this reference into FastTree flags and present the result as
+> equivalent; say which analyses could not be run. Partitioned, dated and
+> concordance-factor analyses need a Linux or macOS host.
+
 ## Basic inference and models
 
 ```bash
