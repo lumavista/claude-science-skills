@@ -1,0 +1,60 @@
+{
+  "_README": "Config for copy_number.py. Paths are relative to this file. Keys starting with _ are comments and are ignored. Replace every value.",
+
+  "identity": "identity.json",
+
+  "_genome_size": "Haploid genome size of the HOST organism, in bp. Set it for the organism the line actually is.",
+  "genome_size": 3100000000,
+
+  "read_length": 150,
+
+  "_ploidy": "Haploid equivalents per cell. Used only to convert per-haploid figures to per-cell. Measure it; do not assume 2. Many immortalised lines are aneuploid and drift on passage.",
+  "ploidy": 2,
+
+  "_modality": "How the vector got in: nhej | integrase | transposon-pb | transposon-sb | hdr | auto. This decides whether the tandem-array estimator is valid, and it changes the site count several-fold. Confirm it against the Stage 2 fingerprint rather than taking it from the paperwork. 'auto' refuses to assume and says so in the report.",
+  "modality": "nhej",
+
+  "_primary_mapping": "The construct whose sites you are counting.",
+  "primary_mapping": "pAlpha",
+
+  "_samples": "One block per sample. dedup_pairs = deduplicated read PAIRS, from the provider summary. depth_files is the PREFERRED input: one `samtools depth -a` file per vector reference, which lets every construct be solved at once instead of estimated. detected_loci is the number of loci Stage 2 actually found, used for the reconciliation.",
+  "samples": {
+    "parental": {
+      "dedup_pairs": 300000000,
+      "depth_files": {
+        "pAlpha": "depth_pAlpha_parental.txt",
+        "pBeta": "depth_pBeta_parental.txt"
+      },
+      "detected_loci": 4
+    },
+    "treated": {
+      "dedup_pairs": 260000000,
+      "depth_files": {
+        "pAlpha": "depth_pAlpha_treated.txt",
+        "pBeta": "depth_pBeta_treated.txt"
+      },
+      "detected_loci": 4
+    }
+  },
+
+  "_mappings": "One block per construct that was mapped against separately. Every name here must also be in the identity map. junctions = the TSV written by classify_junctions.py for that mapping. contig = the vector contig name inside the depth file, only needed if it differs from the construct name. mean_coverage is used ONLY by the fallback routes when no depth file is supplied; delete it once you have depth.",
+  "mappings": {
+    "pAlpha": {
+      "junctions": "junctions_pAlpha.tsv",
+      "contig": "pAlpha_linearized",
+      "mean_coverage": { "parental": 0.0, "treated": 0.0 }
+    },
+    "pBeta": {
+      "junctions": "junctions_pBeta.tsv",
+      "mean_coverage": { "parental": 0.0, "treated": 0.0 }
+    }
+  },
+
+  "_calibration": "OPTIONAL but valuable, and free. A locus of independently known structure, used to validate the conversion factor, the anchor assumption and the ploidy estimate at once. A single insertion on one homologue of a line with ploidy p is 1/p copies per haploid equivalent. Delete this block if you have no such locus.",
+  "calibration": {
+    "mapping": "pBeta",
+    "locus": "<contig>:<position>",
+    "window": 50,
+    "expected_copies_per_haploid": 0.5
+  }
+}

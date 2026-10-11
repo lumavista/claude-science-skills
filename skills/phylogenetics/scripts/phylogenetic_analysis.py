@@ -58,8 +58,14 @@ def count_sequences(fasta_file: str) -> int:
 
 def validate_fasta(path, seq_type="nt", aligned=False, min_taxa=4):
     """Reject ambiguous identifiers, empty records, wrong alphabets and ragged MSAs."""
+    # Full IUPAC/IUBMB amino-acid set: the 20 standard residues, the ambiguity
+    # codes B (Asx), Z (Glx), J (Xle) and X (unknown), and the two genetically
+    # encoded non-standard residues U (selenocysteine) and O (pyrrolysine).
+    # Omitting any of these aborts a whole run over one legitimate residue, and
+    # selenoproteins in particular appear in reference proteomes.
     alphabets = {"nt": set("ACGTURYSWKMBDHVN?-"),
-                 "aa": set("ACDEFGHIKLMNPQRSTVWYBXZ?-")}
+                 "aa": set("ACDEFGHIKLMNPQRSTVWYBJOUXZ?-*")}
+    nonstandard = set("BJOUXZ*")
     if seq_type not in alphabets:
         raise ValueError("Sequence type must be nt or aa")
     records = {}
@@ -91,6 +97,16 @@ def validate_fasta(path, seq_type="nt", aligned=False, min_taxa=4):
             raise ValueError(f"Invalid {seq_type} symbols in {name}: {sorted(invalid)}")
     if aligned and len({len(sequence) for sequence in records.values()}) != 1:
         raise ValueError("Aligned FASTA sequences must have equal lengths")
+    if seq_type == "aa":
+        found = {}
+        for sequence in records.values():
+            for symbol in nonstandard.intersection(sequence):
+                found[symbol] = found.get(symbol, 0) + sequence.count(symbol)
+        if found:
+            counts = ", ".join(f"{s}×{n}" for s, n in sorted(found.items()))
+            print(f"[NOTE] {Path(path).name}: non-standard residues present "
+                  f"({counts}). Accepted, but most aligners and substitution "
+                  f"models treat these as missing data — say so in the methods.")
     return records
 
 
@@ -134,6 +150,16 @@ def run_mafft(input_fasta: str, output_fasta: str, n_threads=4, method="auto") -
     return _run_to_file(command, output_fasta, "MAFFT")
 
 
+# FAMSA accepts B, X, Z and * but rejects J, O and U (verified empirically
+# against pyfamsa 0.7.0). Mapping is opt-in via --map-unsupported, because each
+# of these is a substantive choice about the data, not a formatting detail:
+#   J (Leu/Ile ambiguity) -> X, ambiguity to unknown; conservative.
+#   U (selenocysteine)    -> C, its chemical analogue; standard but lossy.
+#   O (pyrrolysine)       -> K, its chemical analogue; standard but lossy.
+# Editing the source file instead is worse: it loses the original record.
+FAMSA_UNSUPPORTED = {"J": "X", "U": "C", "O": "K"}
+
+
 def _read_fasta_ordered(path):
     """Return [(id, sequence)] in input order, for aligners that take sequences."""
     chunks, order, name = {}, [], None
@@ -153,8 +179,32 @@ def _read_fasta_ordered(path):
     return [(name, "".join(chunks[name])) for name in order]
 
 
+def _map_unsupported(entries, enabled):
+    """Apply FAMSA_UNSUPPORTED, or refuse with the remedy named."""
+    present = {}
+    for _, sequence in entries:
+        for symbol in FAMSA_UNSUPPORTED:
+            if symbol in sequence:
+                present[symbol] = present.get(symbol, 0) + sequence.count(symbol)
+    if not present:
+        return entries, {}
+    counts = ", ".join(f"{s}×{n}" for s, n in sorted(present.items()))
+    if not enabled:
+        remedy = ", ".join(f"{s}->{FAMSA_UNSUPPORTED[s]}" for s in sorted(present))
+        raise RuntimeError(
+            f"FAMSA cannot align these residues: {counts}. Re-run with "
+            f"--map-unsupported to substitute them ({remedy}), which is "
+            f"recorded in the output, or supply sequences without them. "
+            f"Do not edit the source file to work around this.")
+    table = str.maketrans(FAMSA_UNSUPPORTED)
+    print(f"[NOTE] Substituted FAMSA-unsupported residues ({counts}) as "
+          f"{', '.join(f'{s}->{FAMSA_UNSUPPORTED[s]}' for s in sorted(present))}. "
+          f"Report this substitution in the methods.")
+    return [(name, sequence.translate(table)) for name, sequence in entries], present
+
+
 def run_famsa(input_fasta: str, output_fasta: str, n_threads=1,
-              guide_tree="upgma", wrap=60) -> str:
+              guide_tree="upgma", wrap=60, map_unsupported=False) -> str:
     """Progressive MSA through the pyfamsa wheel, for hosts without MAFFT.
 
     FAMSA handles indels normally; this is a different aligner, not a MAFFT
@@ -167,6 +217,7 @@ def run_famsa(input_fasta: str, output_fasta: str, n_threads=1,
     if n_threads < 1:
         raise ValueError("Threads must be positive")
     entries = _read_fasta_ordered(input_fasta)
+    entries, _substituted = _map_unsupported(entries, map_unsupported)
     alignment = Aligner(guide_tree=guide_tree, threads=n_threads).align(
         [Sequence(name.encode(), sequence.encode()) for name, sequence in entries])
     aligned = {record.id.decode(): record.sequence.decode() for record in alignment}
@@ -352,6 +403,9 @@ def main():
     root.add_argument("--midpoint", action="store_true", help="Midpoint-root the display only")
     parser.add_argument("--aligner", default="mafft", choices=["mafft", "famsa"],
                         help="famsa uses the pyfamsa wheel where MAFFT is unavailable")
+    parser.add_argument("--map-unsupported", action="store_true",
+                        help="Substitute residues FAMSA rejects (J->X, U->C, O->K); "
+                             "the substitution is reported, not silent")
     parser.add_argument("--mafft-method", default="auto", choices=list(MAFFT_METHODS))
     parser.add_argument("--aligned", action="store_true", help="Use a reviewed MSA without realignment")
     parser.add_argument("--no-visualization", action="store_true")
@@ -372,7 +426,8 @@ def main():
     if args.aligned:
         aligned = args.input
     elif args.aligner == "famsa":
-        aligned = run_famsa(args.input, f"{prefix}_aligned.fasta", args.threads)
+        aligned = run_famsa(args.input, f"{prefix}_aligned.fasta", args.threads,
+                            map_unsupported=args.map_unsupported)
     else:
         aligned = run_mafft(args.input, f"{prefix}_aligned.fasta",
                             args.threads, args.mafft_method)
