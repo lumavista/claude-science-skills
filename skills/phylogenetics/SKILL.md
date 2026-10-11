@@ -5,7 +5,7 @@ license: Unknown
 compatibility: Requires MAFFT and IQ-TREE 3 or FastTree executables on Linux/macOS. On Windows, MAFFT, IQ-TREE and trimAl are unavailable in practice (no bioconda win-64 builds; vendor binaries fail to load under forced ASLR) — use pyfamsa for alignment and FastTree for inference. Optional tree summaries use Python 3.12 and ete3 3.1.3; rendering also needs PyQt5. Network access is required for installation, not local inference.
 metadata:
   version: "1.6"
-  skill-author: Kuan-lin Huang
+  skill-author: Kuan-lin Huang, modified by Lumavista.BIO
   last-reviewed: "2026-10-11"
 ---
 
