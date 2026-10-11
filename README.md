@@ -1,21 +1,20 @@
 # Claude Science skill subset
 
 A trimmed subset of K-Dense-AI/scientific-agent-skills, selected for
-vaccine-design workflows, **plus original skills written at Lumavista.**
+scientific analysis workflows, **plus original skills written at Lumavista.**
 
 Upstream: https://github.com/K-Dense-AI/scientific-agent-skills (MIT)
 Each skill keeps its own license in its SKILL.md `license` field.
 
 Excluded from upstream: docs/images (229 MB of screenshots), the 22 MB
-demo GIF, and ~157 skills unrelated to this work. That is what pushes
-the upstream repo past the 100 MB import limit.
+demo GIF, and ~157 skills unrelated to this work.
 
 ## Provenance
 
 Most skills here come from the upstream repository above and carry its MIT
-licence, Copyright (c) 2025 K-Dense Inc.
+license, Copyright (c) 2025 K-Dense Inc.
 
-The following are **original work, not from upstream** — bugs, claims and
+The following are original work, not from upstream. Bugs, claims and
 scientific judgements in them are ours, not K-Dense-AI's:
 
 | Skill | Licence |
@@ -26,7 +25,7 @@ scientific judgements in them are ours, not K-Dense-AI's:
 
 ### [`vector-integration-analysis`](skills/vector-integration-analysis)
 
-Characterise integrated vector sequence in stable cell lines from WGS or
+Characterize integrated vector sequence in stable cell lines from WGS or
 targeted insertion-site sequencing: how many integration sites, how many copies
 per site, which construct each junction belongs to, and which reported
 junctions are artefacts. Covers plasmid transfection, lentiviral and
