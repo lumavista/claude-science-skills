@@ -1,7 +1,6 @@
-# Vaccine design skill subset
+# Claude Science skill subset
 
-A trimmed subset of K-Dense-AI/scientific-agent-skills, selected for
-virology / immunology / antigen & epitope / vaccine-design workflows.
+A trimmed subset of K-Dense-AI/scientific-agent-skills, selected for vaccine-design workflows.
 
 Upstream: https://github.com/K-Dense-AI/scientific-agent-skills (MIT)
 Each skill keeps its own license in its SKILL.md `license` field.

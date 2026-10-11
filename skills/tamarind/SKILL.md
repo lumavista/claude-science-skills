@@ -1,13 +1,13 @@
 ---
 name: tamarind
-description: Provides access to a collection of open-source molecular design and structural biology tools on the Tamarind Bio platform, via its REST API or MCP server — no local GPUs required. Tamarind bundles popular open-source models for structure prediction (AlphaFold, Boltz, Chai, ESMFold), protein, binder, and de novo design (RFdiffusion, ProteinMPNN, BoltzGen), antibody and nanobody design and developability, protein-ligand docking (DiffDock, Autodock Vina), binding-affinity prediction, MSA generation, and molecular dynamics. Use when the user mentions Tamarind or tamarind.bio, wants to run any of these open-source tools in the cloud, references app.tamarind.bio/api or the x-api-key header, or needs to submit batches of sequences for structural or biophysical characterization.
+description: Runs de novo protein design, binder design, and antibody/nanobody design and developability on the Tamarind Bio platform via its REST API or MCP server, using RFdiffusion, BoltzGen, ProteinMPNN inverse folding, and developability panels — no local GPUs required. Use for design and optimization tasks that no local skill covers, for batch submission of many sequences, or whenever the user names Tamarind, tamarind.bio, app.tamarind.bio/api, or the x-api-key header. Do NOT use for plain structure prediction, docking, or embeddings when a dedicated local skill exists — prefer AlphaFold2, Boltz, Chai-1, ESMFold2, OpenFold3, ProteinMPNN, LigandMPNN, SolubleMPNN, DiffDock, or ESM-2 directly. Reach for Tamarind for those models only when the user asks for cloud execution, has no local GPU, or needs a batch larger than local compute allows.
 license: MIT
 compatibility: Requires Python 3.10+, a Tamarind Bio account, and an API key from app.tamarind.bio. Uses the `requests` library against the public REST API (these recipes use HTTP directly). Network access required. Optional MCP server at mcp.tamarind.bio/mcp for agent hosts.
 metadata:
   version: "1.3"
   last-reviewed: "2026-09-30"
   skill-author: Tamarind Bio
-  trigger-keywords: protein structure prediction, AlphaFold, Boltz, Chai, ESMFold, protein design, binder design, de novo design, antibody design, nanobody, protein-ligand docking, DiffDock, Autodock Vina, binding affinity, MSA generation, inverse folding, ProteinMPNN, RFdiffusion, BoltzGen, cloud GPU biology, structure prediction API, x-api-key, developability, adme, enzyme, peptide, protein language models, molecular design
+  trigger-keywords: Tamarind, tamarind.bio, de novo design, binder design, antibody design, nanobody design, developability, RFdiffusion, BoltzGen, inverse folding, cloud GPU biology, no local GPU, batch structural characterization, x-api-key
   openclaw:
     primaryEnv: TAMARIND_API_KEY
     envVars:
@@ -18,10 +18,25 @@ metadata:
 
 # Tamarind Bio
 
-Tamarind runs molecular-design and structural-biology tools on managed compute:
-structure prediction, protein and antibody design, docking, binding-affinity
-prediction, MSA generation, and molecular dynamics. Use it when the user requests
-Tamarind, its REST API/MCP server, or cloud execution of these scientific tools.
+Tamarind runs molecular-design and structural-biology tools on managed compute.
+Its full catalog is broad — structure prediction, design, docking, binding-affinity
+prediction, MSA generation, molecular dynamics — but this skill is scoped to the
+part of that catalog nothing else here covers.
+
+## Scope
+
+**Use Tamarind for:** de novo protein design (RFdiffusion, BoltzGen), binder
+design, antibody and nanobody design, developability panels, inverse folding at
+batch scale, and any job the user explicitly wants run on Tamarind's compute.
+
+**Do not use Tamarind for** plain structure prediction, docking, or protein
+embeddings when a dedicated skill is available. AlphaFold2, Boltz, Chai-1,
+ESMFold2, OpenFold3, ProteinMPNN, LigandMPNN, SolubleMPNN, DiffDock and ESM-2
+each have their own skill; those are the default path and should be preferred.
+Route such work to Tamarind only on one of three conditions: the user asks for
+cloud execution by name, no local GPU is available, or the batch is larger than
+local compute can absorb. State which condition applies before submitting.
+
 For local sequence processing or molecular descriptors, use a local library.
 
 ## Sources and review scope
