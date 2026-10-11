@@ -95,20 +95,29 @@ def validate_fasta(path, seq_type="nt", aligned=False, min_taxa=4):
 
 
 def _run_to_file(command, output, label):
-    """Keep any previous output intact when an executable fails or emits nothing."""
+    """Keep any previous output intact when an executable fails or emits nothing.
+
+    Windows refuses os.replace() on a file that still has an open handle
+    (WinError 32), so the handle is closed before the rename rather than at the
+    end of a `with` block. POSIX permits either order, which is why this is easy
+    to get wrong and impossible to catch by testing on Linux alone.
+    """
     output = Path(output)
-    with tempfile.NamedTemporaryFile(mode="w", dir=output.parent, delete=False) as handle:
-        temporary = Path(handle.name)
+    handle = tempfile.NamedTemporaryFile(mode="w", dir=output.parent, delete=False)
+    temporary = Path(handle.name)
+    try:
         try:
             result = subprocess.run(command, stdout=handle, stderr=subprocess.PIPE, text=True)
             handle.flush()
-            if result.returncode != 0:
-                raise RuntimeError(f"{label} failed:\n{result.stderr[-2000:]}")
-            if temporary.stat().st_size == 0:
-                raise RuntimeError(f"{label} produced an empty output")
-            os.replace(temporary, output)
         finally:
-            temporary.unlink(missing_ok=True)
+            handle.close()
+        if result.returncode != 0:
+            raise RuntimeError(f"{label} failed:\n{result.stderr[-2000:]}")
+        if temporary.stat().st_size == 0:
+            raise RuntimeError(f"{label} produced an empty output")
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
     return str(output)
 
 
@@ -165,18 +174,20 @@ def run_famsa(input_fasta: str, output_fasta: str, n_threads=1,
         raise RuntimeError(
             f"FAMSA returned {len(aligned)} sequences for {len(entries)} inputs")
     output = Path(output_fasta)
-    with tempfile.NamedTemporaryFile(mode="w", dir=output.parent, delete=False) as handle:
-        temporary = Path(handle.name)
+    handle = tempfile.NamedTemporaryFile(mode="w", dir=output.parent, delete=False)
+    temporary = Path(handle.name)
+    try:
         try:
             for name, _ in entries:
                 sequence = aligned[name]
                 handle.write(f">{name}\n")
                 for start in range(0, len(sequence), wrap):
                     handle.write(sequence[start:start + wrap] + "\n")
-            handle.flush()
-            os.replace(temporary, output)
         finally:
-            temporary.unlink(missing_ok=True)
+            handle.close()          # Windows: os.replace fails on an open handle
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
     print(f"[OK] FAMSA alignment: {output} ({len(aligned)} sequences, "
           f"guide tree {guide_tree}, threads {n_threads})")
     return str(output)
@@ -219,6 +230,25 @@ def run_fasttree(aligned_fasta: str, output_tree: str, seq_type="nt", executable
     options = ["-nt", "-gtr"] if seq_type == "nt" else ["-lg"]
     return _run_to_file([executable, *options, "-gamma", str(Path(aligned_fasta).resolve())],
                         output_tree, "FastTree")
+
+
+def tree_leaf_names(tree_file):
+    """Leaf labels, preferring dendropy over ete3.
+
+    The accounting check is the one place that must not quietly skip, so it does
+    not depend on ete3 alone — ete3 is unavailable on some hosts, and a skipped
+    check is indistinguishable from a passed one in the log.
+    """
+    try:
+        import dendropy
+    except ImportError:
+        pass
+    else:
+        tree = dendropy.Tree.get(path=str(tree_file), schema="newick",
+                                 preserve_underscores=True)
+        return [node.taxon.label for node in tree.leaf_node_iter()
+                if node.taxon is not None]
+    return load_tree(tree_file).get_leaf_names()
 
 
 def load_tree(tree_file):
@@ -360,9 +390,10 @@ def main():
         tree_file = run_iqtree(aligned, prefix, args.type, args.bootstrap, args.threads,
                               args.outgroup, args.iqtree_bin, args.model, args.seed, args.redo)
     try:
-        leaves = set(load_tree(tree_file).get_leaf_names())
-    except Exception as exc:                      # ete3 absent or unparsable tree
-        print(f"[WARN] Could not count tree leaves ({exc}); verify the taxon set manually")
+        leaves = set(tree_leaf_names(tree_file))
+    except Exception as exc:        # neither dendropy nor ete3, or unparsable tree
+        print(f"[WARN] Could not count tree leaves ({exc}). The accounting check "
+              f"did NOT run; install dendropy and re-check, or verify manually")
     else:
         if leaves != set(records):
             raise RuntimeError(
