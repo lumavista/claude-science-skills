@@ -1,0 +1,34 @@
+# Line-ending policy.
+#
+# This matters more than it looks. Git for Windows defaults to
+# core.autocrlf=true, so without this file an edit committed from Windows can
+# land in the repository with CRLF line endings. A shell script committed that
+# way fails on every Linux and macOS checkout with
+#
+#     /usr/bin/env: 'bash\r': No such file or directory
+#
+# which is a confusing failure for anyone who did not introduce it. Pinning the
+# policy here makes it independent of each contributor's local git config.
+
+# Normalise all text to LF inside the repository
+* text=auto
+
+# ...and keep LF in the working tree too, where it is load-bearing
+*.sh    text eol=lf
+*.py    text eol=lf
+
+# Mark the executable entry points, for hosts that honour it
+skills/*/tests/*.sh linguist-language=Shell
+
+# Never touch these if one is ever committed deliberately
+*.png   binary
+*.jpg   binary
+*.gif   binary
+*.pdf   binary
+*.gz    binary
+*.zip   binary
+*.bam   binary
+*.cram  binary
+*.h5ad  binary
+*.loom  binary
+*.pyc   binary

@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Generated test fixtures and run logs
+**/tests/fixtures/
+*.log
+
+# ---------------------------------------------------------------------------
+# Raw data must never be committed. Scoped to data-analysis skills rather than
+# applied repo-wide, so that other skills' committed templates and assets
+# (e.g. scientific-writing/assets/claim_evidence_template.csv) are unaffected.
+# Already-tracked files are not retroactively ignored, so this is a guard
+# against future accidents, not a substitute for reviewing what you stage.
+# ---------------------------------------------------------------------------
+
+# Sequence and alignment data
+*.fa
+*.fasta
+*.fa.gz
+*.fasta.gz
+*.fq
+*.fastq
+*.fq.gz
+*.fastq.gz
+*.gb
+*.gbk
+*.sam
+*.bam
+*.bam.bai
+*.cram
+*.crai
+*.vcf
+*.vcf.gz
+*.h5ad
+*.loom
+
+# samtools depth output, anywhere
+depth_*.txt
+
+# Pipeline and provider outputs from the vector-integration workflow
+skills/vector-integration-analysis/**/*.tsv
+skills/vector-integration-analysis/**/identity*.json
+skills/vector-integration-analysis/**/accounting*.json
+skills/vector-integration-analysis/**/loci*.tsv
+skills/vector-integration-analysis/**/junctions*.tsv
+
+# Keep committed examples, templates and styles
+!skills/*/assets/**
+!skills/*/references/**
+
+# Credentials
+.env
+*.pem
+*.key
+credentials*
+secrets*
