@@ -19,14 +19,6 @@ Thumbs.db
 **/tests/fixtures/
 *.log
 
-# ---------------------------------------------------------------------------
-# Raw data must never be committed. Scoped to data-analysis skills rather than
-# applied repo-wide, so that other skills' committed templates and assets
-# (e.g. scientific-writing/assets/claim_evidence_template.csv) are unaffected.
-# Already-tracked files are not retroactively ignored, so this is a guard
-# against future accidents, not a substitute for reviewing what you stage.
-# ---------------------------------------------------------------------------
-
 # Sequence and alignment data
 *.fa
 *.fasta
@@ -68,3 +60,6 @@ skills/vector-integration-analysis/**/junctions*.tsv
 *.key
 credentials*
 secrets*
+
+# Specialists export
+specialists-export.yaml
