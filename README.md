@@ -26,7 +26,6 @@ write-up — so removing one degrades the others' workflows.
 | Transcriptomics | `scanpy`, `anndata`, `pydeseq2`, `pathway-enrichment` |
 | Literature & writing | `paper-lookup`, `scientific-writing`, `scientific-visualization` |
 | Study design | `experimental-design`, `statistical-power` |
-| Reference lookup | `database-lookup` |
 
 `immunoinformatics` is not from upstream. It was written for this repo and
 covers MHC class I/II binding prediction, B-cell epitope prediction, IEDB
@@ -35,8 +34,9 @@ screening against the human proteome, and HLA population coverage. Its
 `scripts/epitope_triage.py` encodes the step ordering and writes a
 `.meta.json` sidecar per output so a result carries its tool versions.
 
-`database-lookup` is in the repo but was not imported — it overlaps the
-Claude Science Featured connectors, which are better at the same job.
+`database-lookup` from upstream is deliberately not included — it overlaps the
+Claude Science Featured connectors, which are better at the same job. Skills
+that reference it by name resolve to those connectors.
 
 ## Removed as redundant with Claude Science built-ins
 
@@ -111,19 +111,40 @@ that skill.
 
 `specialists.yaml` records the Claude Science specialists built on these
 skills: each one's description, instructions, selected skills and connectors.
+Six specialists:
+
+| Specialist | Covers | Skills |
+|---|---|---|
+| **Claude Science** (`OPERON`) | Default profile — the full skill and connector set | all |
+| **Immuno-Designer** | T-/B-cell epitope prediction, conservation, population coverage, candidate triage | `immunoinformatics`, `glycoengineering`, `tamarind`, `biopython`, `phylogenetics`, `pathogen-variant-surveillance` |
+| **Literature-Search** | Provenance-tracked multi-API search, evidence-traceable write-ups, study sizing | `paper-lookup`, `literature-review`*, `scientific-writing`, `scientific-visualization`, `experimental-design`, `statistical-power` |
+| **Pathogen-Surveillance** | Circulating lineages, growth, mutations, phylogenies (GenSpectrum/LAPIS) | `pathogen-variant-surveillance`, `phylogenetics`, `biopython`, `scientific-visualization` |
+| **Immune-Profiler** | Systems-vaccinology transcriptomics: composition, DE, enrichment | `scanpy`, `anndata`, `pydeseq2`, `pathway-enrichment`, `statistical-power`, `scvi-tools`*, `scientific-visualization` |
+| **Antigen-Structure** | Structure retrieval, epitope accessibility, glycan shielding, embeddings, light MD, cloud design | `tamarind`, `esm`, `glycoengineering`, `molecular-dynamics`, `biopython`, `adaptyv`, `scientific-visualization` |
+
+\* `literature-review` and `scvi-tools` are Claude Science built-ins, not skills
+in this repo; a repo re-import clears the selection, so re-select them.
 
 Claude Science has no specialist import or export, so this file is
-documentation rather than something you can load. It is read directly from
-the app's local store (`user_agents` and `directory_attachments` in
-`orgs/<org>/operon-cli.db`) and sanitized for publication — machine
-identifiers and local UUIDs removed, absolute paths replaced with
-`%USERPROFILE%`. Re-enter a specialist by hand under
+documentation rather than something you can load. It is read from the app's
+local store (`user_agents` and `directory_attachments` in
+`orgs/<org>/operon-cli.db`), sanitized for publication (machine identifiers and
+local UUIDs removed, absolute paths replaced with `%USERPROFILE%`), and then
+hand-revised — so it is no longer a byte-for-byte app export. The current
+revision splits each instruction field into a portable **scientific contract**
+and a fenced **host notes** block (findings from one Windows host, safe to
+delete when you move machines), and adds the `genomes` connector to
+Immuno-Designer and the `statistical-power` skill plus the `genes-ontologies`
+connector to Immune-Profiler. Re-enter a specialist by hand under
 **Settings > Specialists**, and note that re-importing this repo clears each
 specialist's skill selections, so re-select them afterwards.
 
-The instructions fields carry findings measured on one Windows host, so
-adapt them rather than copying verbatim. Two are worth reading even if you
-never use these specialists:
+`vector-integration-analysis` is selected in the default profile but in none of
+the five focused specialists — an open scope decision, left as-is.
+
+Two findings from the Immune-Profiler scientific contract are worth reading
+even if you never use these specialists. They are portable statistical
+properties — reproduced in simulation, not artifacts of any one host:
 
 - **Pseudoreplication.** On a simulated null with 8 donors and no true
   condition effect, a per-cell Wilcoxon test called roughly 1,390 of 2,000
