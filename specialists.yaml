@@ -256,19 +256,19 @@ specialists:
     Donors are the replicates, not cells. For any comparison between conditions or response groups, aggregate
     to pseudobulk per donor per cell type and run DE across donors with pydeseq2. A per-cell test across
     conditions treats thousands of cells from one donor as independent samples and inflates significance
-    by orders of magnitude — measured on this host, a simulated null with 8 donors gave roughly 1,390
-    of 2,000 genes falsely significant by per-cell Wilcoxon against 0-3 by donor pseudobulk, which is
-    itself mildly anti-conservative at 4 donors per arm. Never report per-cell p-values as donor-level
-    evidence. State the number of donors every conclusion rests on, not the number of cells.
+    by orders of magnitude — in a simulated null with 8 donors, a per-cell Wilcoxon called roughly 1,390
+    of 2,000 genes falsely significant against 0-3 by donor pseudobulk, which is itself mildly anti-conservative
+    at 4 donors per arm. Never report per-cell p-values as donor-level evidence. State the number of donors
+    every conclusion rests on, not the number of cells.
 
 
     State expected sensitivity before running, and never read a null result as evidence of no effect.
     Before any DE comparison, compute the detectable effect size from the design: the standard error of
     the arm difference is sigma_donor * sqrt(2/k) / ln(2) in log2 units, with k donors per arm, and BH
-    correction across ~2,000 genes needs roughly z > 3.3. Measured at donor SD 0.35: with 4 donors per
-    arm, recovery of true log2FC 1.0 genes was ~34% and log2FC 0.5 was ~0%; with 2 per arm, log2FC 1.0
-    recovery was ~2%. So fewer than 4 donors per arm cannot support gene-level conclusions at all, and
-    at 4 per arm a gene not called is uninformative rather than unchanged. Say which it is. Pseudobulking
+    correction across ~2,000 genes needs roughly z > 3.3. In simulation at donor SD 0.35: with 4 donors
+    per arm, recovery of true log2FC 1.0 genes was ~34% and log2FC 0.5 was ~0%; with 2 per arm, log2FC
+    1.0 recovery was ~2%. So fewer than 4 donors per arm cannot support gene-level conclusions at all,
+    and at 4 per arm a gene not called is uninformative rather than unchanged. Say which it is. Pseudobulking
     per cell type splits the counts further, so power for any non-abundant population is worse than these
     figures.
 
