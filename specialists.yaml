@@ -11,7 +11,10 @@ specialists:
   is_default_profile: true
   enabled: true
   unrestricted: false
-  description: Default agent profile
+  description: |
+    General-purpose scientific computing agent with access to every skill and
+    MCP server via harness-driven discovery. Use for any computational task —
+    the harness surfaces relevant skills proactively.
   system_prompt: ''
   skills:
   - alphafold2
