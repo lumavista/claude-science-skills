@@ -151,6 +151,13 @@ silently substituting. Class II matters for vaccine design well beyond CD4
 help — it drives B-cell help and affinity maturation, so a construct with good
 class I coverage and no class II content often disappoints.
 
+**Before recommending any class II tool for a commercial program, read
+`references/tool-licensing.md`.** NetMHCIIpan is academic-only. The permissive
+fallback is MHCnuggets (Apache-2.0, class I and II, unmaintained since 2023).
+Name it and state its limits, rather than saying no open option exists. Class II
+prediction is also materially less accurate than class I, so say so alongside
+any ranking.
+
 ### 4. Check against experimentally validated epitopes
 
 Before ranking anything, find out what is already known. IEDB holds curated
@@ -193,6 +200,8 @@ failure mode for envelope glycoprotein epitope prediction.
 alignment.** It applies Henikoff sequence weighting, reports effective sample
 size, and reconciles alignment positions to PDB residue numbering — none of
 which the fallback below can do.
+
+Report the effective sample size it prints, not the raw sequence count.
 
 ```bash
 # align (phylogenetics skill), then score
