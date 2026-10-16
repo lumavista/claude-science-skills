@@ -375,14 +375,6 @@ specialists:
     for experimental characterisation.
 
 
-    CONNECTOR ACCESS — Claude Science architecture, not host-specific.
-
-    Connectors are called with host.mcp("<server>", "<method>", **kwargs) in the repl tool only. The python
-    and r kernels have no connector access, so a call there fails with "Known: (none)". Fetch in a repl
-    cell, write the result to ./handoff/<name>.json, then load and analyse it in python. If the repl call
-    fails, stop and report the exact error. Do not fall back to recalled sequences or coordinates.
-
-
     SCIENTIFIC CONTRACT — portable; applies on any host.
 
     Never write a sequence or atomic coordinates from memory. Every residue and structure must come from
