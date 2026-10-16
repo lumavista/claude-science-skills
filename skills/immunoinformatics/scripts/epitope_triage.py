@@ -6,12 +6,28 @@ Subcommands:
   mhc1          MHC class I binding prediction (MHCflurry, or NetMHCpan if present).
   mhc2          MHC class II binding prediction (NetMHCIIpan; reports if absent).
   iedb          Retrieve experimentally validated epitopes from IEDB.
-  conservation  Score candidates against a set of circulating variant sequences.
+  conservation  Count candidates intact across variant sequences (fallback —
+                see note below).
   selfcheck     Flag candidates with close identity to the human proteome.
   coverage      HLA population coverage via the IEDB tool.
 
 Every subcommand writes a TSV and prints a one-line summary to stderr.
 Tool versions are recorded in a sidecar <out>.meta.json for reproducibility.
+
+Two capabilities live outside this script:
+
+  conservation  The `conservation` subcommand here counts exact peptide
+                occurrences in unaligned sequences. It does not weight for
+                redundant sampling and cannot see per-position or structural
+                context, so a clade-skewed panel inflates its fractions. When
+                an alignment is available, prefer the `conservation-mapping`
+                skill (scripts/conservation_score.py), which applies Henikoff
+                weighting, reports effective sample size, and maps scores onto
+                structure. Keep this subcommand for the alignment-free case.
+
+  mosaic        Mosaic and cocktail construct design, and junctional
+                neo-epitope checking, are in mosaic_design.py beside this
+                file.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-exported_at: '2026-10-13 00:00:00Z'
+exported_at: '2026-10-16 00:00:00Z'
 exported_from:
   source: operon-cli.db, tables user_agents + directory_attachments
   note: Hand-revised reference copy (not a raw app export). Based on the operon-cli.db export of 2026-10-12;
@@ -57,6 +57,8 @@ specialists:
   - adaptyv
   - anndata
   - biopython
+  - conservation-mapping
+  - construct-assembly
   - esm
   - experimental-design
   - glycoengineering
@@ -125,8 +127,18 @@ specialists:
     class II rankings with explicitly lower confidence than class I.
 
 
-    When reporting conservation, always state the number of sequences it was computed over. When reporting
-    population coverage, give per-region figures alongside any global figure.
+    When reporting conservation, use conservation-mapping wherever an alignment is available, and state
+    the EFFECTIVE sample size it reports, not the raw sequence count — a panel of 400 sequences with an
+    effective N of 12 supports almost no conservation claim, and the raw count conceals that. The
+    epitope_triage conservation subcommand is an alignment-free fallback only; if you use it, say so and
+    give the panel composition. When reporting population coverage, give per-region figures alongside any
+    global figure.
+
+
+    For any multivalent or string-of-beads construct, run the junction check (mosaic_design.py evaluate)
+    at k=9 and k=15 before reporting the design, and list any k-mer absent from the strain panel rather
+    than filtering it away. Report per-strain coverage minimum and 10th percentile alongside the aggregate
+    — an aggregate figure can hide an entirely uncovered clade.
 
 
     Prefer the dedicated structure-prediction skills (AlphaFold2, Boltz, Chai-1, ESMFold2, OpenFold3,
@@ -138,6 +150,8 @@ specialists:
     is not reproducible.'
   skills:
   - immunoinformatics
+  - conservation-mapping
+  - construct-assembly
   - glycoengineering
   - tamarind
   - biopython
@@ -152,7 +166,7 @@ specialists:
   skill_tombstones: []
   connector_tombstones: []
   created_at: '2026-10-11 12:04:07Z'
-  updated_at: '2026-10-13 00:00:00Z'
+  updated_at: '2026-10-16 00:00:00Z'
 - name: LITERATURE_SEARCH
   display_name: Literature-Search
   is_default_profile: false
@@ -196,7 +210,7 @@ specialists:
   skill_tombstones: []
   connector_tombstones: []
   created_at: '2026-10-11 13:51:31Z'
-  updated_at: '2026-10-13 00:00:00Z'
+  updated_at: '2026-10-16 00:00:00Z'
 - name: PATHOGEN_SURVEILLANCE
   display_name: Pathogen-Surveillance
   is_default_profile: false
@@ -238,7 +252,7 @@ specialists:
   skill_tombstones: []
   connector_tombstones: []
   created_at: '2026-10-11 14:10:22Z'
-  updated_at: '2026-10-13 00:00:00Z'
+  updated_at: '2026-10-16 00:00:00Z'
 - name: IMMUNE_PROFILER
   display_name: Immune-Profiler
   is_default_profile: false
@@ -344,7 +358,7 @@ specialists:
   skill_tombstones: []
   connector_tombstones: []
   created_at: '2026-10-12 20:11:49Z'
-  updated_at: '2026-10-13 00:00:00Z'
+  updated_at: '2026-10-16 00:00:00Z'
 - name: ANTIGEN_STRUCTURE
   display_name: Antigen-Structure
   is_default_profile: false
@@ -427,6 +441,8 @@ specialists:
   - tamarind
   - esm
   - glycoengineering
+  - conservation-mapping
+  - construct-assembly
   - molecular-dynamics
   - biopython
   - adaptyv
@@ -439,4 +455,4 @@ specialists:
   skill_tombstones: []
   connector_tombstones: []
   created_at: '2026-10-12 21:35:20Z'
-  updated_at: '2026-10-13 00:00:00Z'
+  updated_at: '2026-10-16 00:00:00Z'

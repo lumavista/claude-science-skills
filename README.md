@@ -12,7 +12,7 @@ relevant to the workflows above, so it imports cleanly.
 
 ## Provenance
 
-- **Original to this repo:** `immunoinformatics`, `vector-integration-analysis`
+- **Original to this repo:** `immunoinformatics`, `conservation-mapping`, `construct-assembly`, `vector-integration-analysis`
 - **From upstream, locally modified:** `tamarind`, `phylogenetics`
 - **From upstream, unchanged:** the remaining 15 skills
 
@@ -21,14 +21,18 @@ field of its `SKILL.md`.
 
 ## Skills
 
-19 skills. Several reference each other by name — `immunoinformatics` hands off
+21 skills. Several reference each other by name — `immunoinformatics` hands off
 to `pathogen-variant-surveillance` for circulating variants, to
-`glycoengineering` for glycan shielding, and to `scientific-writing` for the
-write-up — so removing one can degrade another's workflow.
+`conservation-mapping` for per-position conservation, to `glycoengineering` for
+glycan shielding, to `construct-assembly` for linkers and developability, and to
+`scientific-writing` for the write-up — so removing one can degrade another's
+workflow.
 
 | Domain | Skill | What it does |
 |---|---|---|
 | Epitopes & antigen design | `immunoinformatics` | T-/B-cell epitope prediction and triage: MHC class I/II binding, conservation across variants, self-similarity screening, HLA population coverage |
+| | `conservation-mapping` | Henikoff-weighted per-position conservation across a strain panel, reconciled to PDB numbering, written into B-factors, clustered into conserved surface patches |
+| | `construct-assembly` | Linkers, tags, trimerisation and display domains, junction scanning, ThermoMPNN stability, and local developability screening for orderable constructs |
 | | `glycoengineering` | Analyzes and engineers protein glycosylation — N-glycosylation sequons, glycan shielding, curated glycan databases |
 | | `esm` | ESM3 protein generation, ESMC embeddings, and ESMFold2 folding via the Biohub ESM SDK |
 | | `tamarind` | De novo, binder, and antibody/nanobody design and developability on the Tamarind Bio platform |
@@ -50,6 +54,32 @@ write-up — so removing one can degrade another's workflow.
 
 ## Original skills
 
+### `conservation-mapping`
+
+Written from scratch for this repo. Scores per-position conservation with
+Henikoff sequence weighting and reports effective sample size, so a
+clade-skewed panel cannot masquerade as a conserved one. Reconciles alignment
+positions to PDB residue numbering by aligning the structure's own CA-derived
+sequence — the hazard `glycoengineering/references/glycoshield.md` flags
+without fixing — and persists the result as a `pdb_resnum` column so every
+downstream structural join has a reliable key. Clusters conserved exposed
+residues into surface patches sized against a Fab footprint.
+
+Alignment is delegated to `phylogenetics`; this skill does not align.
+
+### `construct-assembly`
+
+Written from scratch for this repo. Covers the parts of a construct that are
+not the antigen: linker family and length, trimerisation and display domains,
+tag placement, signal peptides, and junction scanning. Adds ThermoMPNN point-
+mutant stability and a dependency-free local developability screen (free
+cysteines, sequons created by design, deamidation and isomerisation motifs,
+hydrophobic patches, GRAVY, pI).
+
+Inverse folding, de novo design and refolding are delegated to `tamarind`
+rather than reimplemented, so they cannot drift out of sync with its live
+schema discovery.
+
 ### `immunoinformatics`
 
 Written from scratch for this repo. Covers MHC class I/II binding prediction,
@@ -58,6 +88,19 @@ circulating variants, self-similarity screening against the human proteome, and
 HLA population coverage. Its `scripts/epitope_triage.py` encodes the step
 ordering and writes a `.meta.json` sidecar per output so each result carries its
 tool versions.
+
+`scripts/mosaic_design.py` adds mosaic and cocktail construct design by k-mer
+coverage maximisation, plus the junctional neo-epitope check the workflow has
+always called for. Mosaic mode walks a de Bruijn graph built from the strain
+panel, so no k-mer absent from the panel can be constructed. The LANL Mosaic
+Vaccine Designer and EpiGraph could not be confirmed live as of 2026-10, so the
+algorithm is implemented directly.
+
+`references/tool-licensing.md` records current versions and licences for every
+predictor, folding model and design tool the collection touches, including the
+code-versus-weights splits that a single licence field would misrepresent — and
+corrects NetMHCpan to 4.2e. `references/compute-routes.md` covers what runs on
+CPU locally, what goes to Tamarind, and the free hosted GPU routes.
 
 ### `vector-integration-analysis`
 
@@ -110,11 +153,11 @@ skills — each one's description, instructions, selected skills, and connectors
 | Specialist | Covers | Skills |
 |---|---|---|
 | **Claude Science** | Default profile — the full skill and connector set | all |
-| **Immuno-Designer** | Epitope prediction, conservation, population coverage, candidate triage | `immunoinformatics`, `glycoengineering`, `tamarind`, `biopython`, `phylogenetics`, `pathogen-variant-surveillance` |
+| **Immuno-Designer** | Epitope prediction, conservation, population coverage, candidate triage | `immunoinformatics`, `conservation-mapping`, `construct-assembly`, `glycoengineering`, `tamarind`, `biopython`, `phylogenetics`, `pathogen-variant-surveillance` |
 | **Literature-Search** | Provenance-tracked multi-API search, evidence-traceable write-ups, study sizing | `paper-lookup`, `scientific-writing`, `scientific-visualization`, `experimental-design`, `statistical-power` |
 | **Pathogen-Surveillance** | Circulating lineages, growth, mutations, phylogenies | `pathogen-variant-surveillance`, `phylogenetics`, `biopython`, `scientific-visualization` |
 | **Immune-Profiler** | Systems-vaccinology transcriptomics: composition, DE, enrichment | `scanpy`, `anndata`, `pydeseq2`, `pathway-enrichment`, `statistical-power`, `scientific-visualization` |
-| **Antigen-Structure** | Structure retrieval, epitope accessibility, glycan shielding, embeddings, light MD, cloud design | `tamarind`, `esm`, `glycoengineering`, `molecular-dynamics`, `biopython`, `adaptyv`, `scientific-visualization` |
+| **Antigen-Structure** | Structure retrieval, epitope accessibility, glycan shielding, embeddings, light MD, cloud design | `tamarind`, `esm`, `glycoengineering`, `conservation-mapping`, `construct-assembly`, `molecular-dynamics`, `biopython`, `adaptyv`, `scientific-visualization` |
 
 Claude Science has no specialist import/export, so `specialists.yaml` is
 documentation, not something the app can load. Re-enter a specialist by hand
@@ -140,5 +183,6 @@ standard Claude skill layout and also work anywhere else that loads
 
 Upstream skills are MIT ([K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills)).
 Each skill states its own license in its `SKILL.md`. The two original skills
-(`immunoinformatics`, `vector-integration-analysis`) carry their licenses in the
+(`immunoinformatics`, `conservation-mapping`, `construct-assembly`,
+`vector-integration-analysis`) carry their licenses in the
 same field.
