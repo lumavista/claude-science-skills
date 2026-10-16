@@ -1,12 +1,12 @@
 ---
 name: immunoinformatics
-description: Predicts and triages T-cell and B-cell epitopes for protective vaccine design. Covers MHC class I and II binding prediction (NetMHCpan, NetMHCIIpan, MHCflurry, MixMHCpred), linear and conformational B-cell epitope prediction (BepiPred, DiscoTope, SEMA), retrieval of experimentally validated epitopes from IEDB, HLA population coverage analysis, conservation across circulating variants, and self-similarity screening against the human proteome. Use for immunogen candidate selection, epitope-based construct design, and coverage assessment across target populations.
+description: Predicts and triages T-cell and B-cell epitopes for protective vaccine design. Covers MHC class I and II binding prediction (NetMHCpan, NetMHCIIpan, MHCflurry, MixMHCpred), linear and conformational B-cell epitope prediction (BepiPred, DiscoTope, SEMA), retrieval of experimentally validated epitopes from IEDB, HLA population coverage analysis, conservation across circulating variants, self-similarity screening against the human proteome, and mosaic or cocktail construct design with junctional neo-epitope checking. Use for immunogen candidate selection, epitope-based construct design, and coverage assessment across target populations. For per-position conservation scoring and mapping onto structure, this skill defers to conservation-mapping; for linkers, tags and construct developability it defers to construct-assembly.
 license: MIT
 compatibility: Python 3.10+. MHCflurry 2.1 and the IEDB web APIs need network access and run anywhere. NetMHCpan-4.1, NetMHCIIpan-4.3, BepiPred-3.0 and DiscoTope-3.0 are DTU Health Tech tools under an academic-only license and must be installed separately; the scripts here call them if present and otherwise fall back. Conformational B-cell prediction needs a structure (experimental or predicted).
 metadata:
-  version: "1.0"
+  version: "1.1"
   skill-author: Drafted for vaccine-design subset
-  last-reviewed: "2026-10-11"
+  last-reviewed: "2026-10-16"
 ---
 
 # Immunoinformatics
@@ -189,6 +189,24 @@ failure mode for envelope glycoprotein epitope prediction.
 
 ### 6. Assess conservation across circulating variants
 
+**Use the `conservation-mapping` skill when you have, or can build, an
+alignment.** It applies Henikoff sequence weighting, reports effective sample
+size, and reconciles alignment positions to PDB residue numbering — none of
+which the fallback below can do.
+
+```bash
+# align (phylogenetics skill), then score
+python ../conservation-mapping/scripts/conservation_score.py \
+  --aln work/panel.afa --ref <REFERENCE_ACCESSION> \
+  --out work/conservation.tsv \
+  --pdb input/antigen.pdb --pdb-chain A --pdb-out work/conservation.pdb
+```
+
+Join candidates to that table on `ref_pos` to get a per-residue conservation
+profile across each peptide, rather than a single intact/not-intact call.
+
+The alignment-free fallback, for when no alignment is practical:
+
 ```bash
 python scripts/epitope_triage.py conservation \
   --candidates work/mhc1.tsv \
@@ -196,10 +214,14 @@ python scripts/epitope_triage.py conservation \
   --out work/conserved.tsv
 ```
 
-Report, per candidate, the fraction of sampled sequences carrying it intact and
-the positions that vary. Weight selection toward conserved candidates, but check
-*why* a region is conserved — functional constraint is a good reason, low
-sampling coverage is not.
+This counts exact peptide occurrences in unaligned sequences. It does not
+correct for redundant sampling, so a panel dominated by one clade will report
+clade-specific peptides as highly conserved. If you use it, say so, and report
+the panel composition alongside the fraction.
+
+Either way: weight selection toward conserved candidates, but check *why* a
+region is conserved. Functional constraint is a good reason; shallow or skewed
+sampling is not, and the two are indistinguishable from the fraction alone.
 
 ### 7. Screen for self-similarity and allergenicity
 
@@ -237,7 +259,53 @@ figure per region rather than only globally — a construct at 95% world coverag
 can sit far lower in a specific population, which is exactly the kind of gap
 that matters for deployment.
 
-### 9. Report
+### 9. Design a multivalent construct, if breadth demands one
+
+When no single antigen covers the strain panel, the options are a cocktail of
+natural sequences or a synthetic mosaic set. Both are coverage-optimisation
+problems over k-mers, and both are handled by `mosaic_design.py`.
+
+```bash
+# natural-sequence cocktail: every component is a real strain
+python scripts/mosaic_design.py cocktail --fasta work/panel.fasta \
+  -n 4 -k 9 --out work/cocktail
+
+# synthetic mosaics: more coverage per component
+python scripts/mosaic_design.py mosaic --fasta work/panel.fasta \
+  -n 2 -k 9 --beam 200 --out work/mosaic
+```
+
+**Mosaic mode cannot create junctional neo-epitopes.** It walks a de Bruijn
+graph built from the panel, so every k-mer in the output occurs in some real
+strain by construction. The script verifies this and fails loudly if it ever
+does not.
+
+**Check any other construct with `evaluate`.** Naive concatenation,
+string-of-beads designs and fusion constructs all create junction-spanning
+peptides that exist in no real strain:
+
+```bash
+python scripts/mosaic_design.py evaluate --fasta work/panel.fasta \
+  --designs work/my_construct.fasta -k 9 --out work/construct_eval
+```
+
+Run this at k=9 and again at k=15 to cover class I and class II registers.
+
+**Read the coverage output honestly.** The script reports aggregate coverage
+and the per-strain distribution. The aggregate is the misleading one — a design
+can reach 90% weighted coverage while an entire clade sits near zero, because
+weighted optimisation correctly ignores a sparsely sampled clade. Report the
+minimum and 10th percentile, name the uncovered strains, and state whether the
+gap was accepted deliberately. `--unweighted` trades common-variant depth for
+rare-variant breadth if that is the call you want to make.
+
+Cocktails are guaranteed foldable and processable because the components are
+real proteins. Mosaics usually are not foldable — fine for mRNA or peptide
+delivery, not for anything that must present a conformational surface. Carry
+that distinction into `construct-assembly`, which applies different QC
+depending on whether a construct must fold.
+
+### 10. Report
 
 Produce a table with, per candidate: sequence, source antigen and position,
 restricting alleles with percentile ranks, IEDB support, conservation fraction,
@@ -264,7 +332,18 @@ pending experimental validation.
   stacked as independent filters.
 - **A construct is not a list.** Epitope order, linkers, flanking residues and
   delivery format all change what is processed and presented. String-of-beads
-  designs create junctional neo-epitopes at every join; check those explicitly.
+  designs create junctional neo-epitopes at every join; check those with
+  `mosaic_design.py evaluate` (step 9) rather than by eye.
+
+## Reference files
+
+- `references/tool-licensing.md` — licensing and current versions for every
+  predictor, folding model and design tool named here, including the code-vs-
+  weights splits that a single licence field would misrepresent. Read it before
+  wiring any tool into a pipeline intended for publication or product. Note it
+  records NetMHCpan as 4.2e, superseding the 4.1 named below.
+- `references/compute-routes.md` — which steps run on CPU locally, which go to
+  Tamarind, and which free hosted routes exist when Tamarind does not fit.
 
 ## Official references
 
