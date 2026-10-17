@@ -28,6 +28,12 @@ samples: a genuinely different framework that this skill does not reimplement.
 Read `references/scope.md` before redirecting; the two are easy to confuse and
 the wrong one produces confident nonsense.
 
+**This skill never aligns reads.** It consumes a provider's junction calls and
+`samtools depth` output, so the work is table arithmetic and IO — CPU-bound, and
+GPU aligners simply do not apply. Even if alignment were in scope, NVIDIA
+Parabricks requires ≥16 GB VRAM and ships Linux-only via Docker, which fails both
+gates on an 8 GiB Windows card.
+
 ## Settle the delivery modality first
 
 **This is the first decision, and the most consequential one in the skill.**

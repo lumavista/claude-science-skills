@@ -1,13 +1,13 @@
 ---
 name: tamarind
-description: Runs de novo protein design, binder design, and antibody/nanobody design and developability on the Tamarind Bio platform via its REST API or MCP server, using RFdiffusion, BoltzGen, ProteinMPNN inverse folding, and developability panels — no local GPUs required. Use for design and optimization tasks that no local skill covers, for batch submission of many sequences, or whenever the user names Tamarind, tamarind.bio, app.tamarind.bio/api, or the x-api-key header. Do NOT use for plain structure prediction, docking, or embeddings when a dedicated local skill exists — prefer AlphaFold2, Boltz, Chai-1, ESMFold2, OpenFold3, ProteinMPNN, LigandMPNN, SolubleMPNN, DiffDock, or ESM-2 directly. Reach for Tamarind for those models only when the user asks for cloud execution, has no local GPU, or needs a batch larger than local compute allows.
+description: Runs de novo protein design, binder design, and antibody/nanobody design and developability on the Tamarind Bio platform via its REST API or MCP server, using RFdiffusion, BoltzGen, ProteinMPNN inverse folding, and developability panels — no local GPUs required. Use for design and optimization tasks that no local skill covers, for batch submission of many sequences, or whenever the user names Tamarind, tamarind.bio, app.tamarind.bio/api, or the x-api-key header. Do NOT use for plain structure prediction, docking, or embeddings when a dedicated local skill exists — prefer AlphaFold2, Boltz, Chai-1, ESMFold2, OpenFold3, ProteinMPNN, LigandMPNN, SolubleMPNN, DiffDock, or ESM-2 directly. Reach for Tamarind for those models only when the user asks for cloud execution, when the job exceeds the local GPU's memory, or when the batch is larger than local compute allows.
 license: MIT
 compatibility: Requires Python 3.10+, a Tamarind Bio account, and an API key from app.tamarind.bio. Uses the `requests` library against the public REST API (these recipes use HTTP directly). Network access required. Optional MCP server at mcp.tamarind.bio/mcp for agent hosts.
 metadata:
   version: "1.3"
   last-reviewed: "2026-09-30"
   skill-author: Tamarind Bio
-  trigger-keywords: Tamarind, tamarind.bio, de novo design, binder design, antibody design, nanobody design, developability, RFdiffusion, BoltzGen, inverse folding, cloud GPU biology, no local GPU, batch structural characterization, x-api-key
+  trigger-keywords: Tamarind, tamarind.bio, de novo design, binder design, antibody design, nanobody design, developability, RFdiffusion, BoltzGen, inverse folding, cloud GPU biology, exceeds local VRAM, batch structural characterization, x-api-key
   openclaw:
     primaryEnv: TAMARIND_API_KEY
     envVars:
@@ -34,8 +34,17 @@ embeddings when a dedicated skill is available. AlphaFold2, Boltz, Chai-1,
 ESMFold2, OpenFold3, ProteinMPNN, LigandMPNN, SolubleMPNN, DiffDock and ESM-2
 each have their own skill; those are the default path and should be preferred.
 Route such work to Tamarind only on one of three conditions: the user asks for
-cloud execution by name, no local GPU is available, or the batch is larger than
-local compute can absorb. State which condition applies before submitting.
+cloud execution by name, the job exceeds the local GPU's memory, or the batch is
+larger than local compute can absorb. State which condition applies before
+submitting.
+
+The second condition is about capacity, not absence. A local GPU is usually
+present; what sends a job to Tamarind is a model or an input too large for its
+VRAM — on an 8 GiB card that means a checkpoint above roughly 3B parameters in
+bf16, or a long chain whose folding activations exceed the card regardless of
+checkpoint size. Check first and name the number, because "no local GPU" and
+"this job does not fit on the local GPU" are different claims and only the
+second is usually true.
 
 For local sequence processing or molecular descriptors, use a local library.
 

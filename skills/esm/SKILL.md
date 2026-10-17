@@ -2,7 +2,7 @@
 name: esm
 description: Uses the Biohub esm Python SDK for ESM3 protein generation, ESMC embeddings, and ESMFold2 all-atom folding. Applies to local model inference and Biohub hosted clients, including former Forge workflows; distinguishes the separate legacy fair-esm distribution.
 license: MIT license
-compatibility: Requires Python 3.12+ and esm 3.4.1.post1. Local pretrained inference needs model weights and sufficient RAM or GPU memory; hosted inference needs network access and ESM_API_KEY. Use an isolated environment, separate from fair-esm.
+compatibility: Requires Python 3.12+ and esm 3.4.1.post1. Local pretrained inference runs on a CUDA GPU when one is present and falls back to CPU automatically; CPU is correct but far slower, and the larger checkpoints are impractical on it. Select the device with scripts/_device.py or override with SCI_DEVICE. Hosted inference needs network access and ESM_API_KEY. Use an isolated environment, separate from fair-esm.
 metadata:
   version: "2.0"
   skill-author: K-Dense Inc.
@@ -40,6 +40,71 @@ inference machine and budget disk space. Flash Attention is optional; it is
 unnecessary for the tiny CPU tests. Do not install this stack into a shared
 environment containing incompatible Transformers or Torch pins.
 
+The default PyPI `torch` wheel on Windows is CPU-only, so a plain install will
+run on the CPU even on a machine with a working GPU. Install a CUDA build
+explicitly and confirm it before blaming the model for being slow:
+
+```bash
+uv pip install --python .venv-esm/bin/python torch --index-url https://download.pytorch.org/whl/cu132
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+Match the `cu###` channel to the installed driver; `nvidia-smi` reports the
+maximum CUDA version the driver supports. `torch.cuda.is_available()` printing
+`False` on a machine with a GPU almost always means a CPU-only wheel, not a
+hardware fault.
+
+**A shared CUDA environment will not satisfy this skill.** The pins above are
+narrow: Python >=3.12 and Torch >=2.11,<2.12. A general-purpose GPU environment
+built on Python 3.11 with a current torch (2.14, say) violates both, and
+neither violation is cosmetic — the Python floor blocks installation outright,
+and the torch ceiling is an upper bound the SDK declares against its own
+compiled extensions. Resolve it one of three ways, in order of preference:
+build this skill its own Python 3.12 venv with a CUDA torch in the 2.11.x line;
+use the hosted Biohub client and skip local weights; or re-verify the current
+`esm` release's pins, since a newer release may have widened them. Do not
+install `esm` into a shared environment and assume pip resolved it sensibly —
+check `torch.__version__` and `sys.version` inside the environment that will
+actually run the model.
+
+## Device selection and VRAM
+
+Use [scripts/_device.py](scripts/_device.py) rather than hardcoding a device.
+It returns `"cuda"` when a GPU is usable, `"mps"` on Apple silicon and `"cpu"`
+otherwise, degrades silently when torch is missing, and honors an explicit
+`SCI_DEVICE=cpu|cuda` override for forcing a route or reproducing a CPU result.
+
+```python
+import sys; sys.path.insert(0, "scripts")
+from _device import select_device, autocast_dtype, device_report
+
+device = select_device()          # "cuda" on a working GPU, else "cpu"
+print(device_report())            # e.g. cuda (NVIDIA GeForce RTX 4060, 8.0 GiB)
+```
+
+Weight footprint is arithmetic, not a published figure: parameters x bytes per
+parameter, plus roughly a third again for activations, workspace and allocator
+fragmentation. `fits_in_vram()` applies exactly that heuristic. Neither Biohub
+nor EvolutionaryScale publishes per-checkpoint VRAM requirements, so treat the
+table below as sizing guidance to be confirmed by an actual run, not a spec.
+
+| Checkpoint | Params | bf16 weights | On an 8 GiB card |
+| --- | --- | --- | --- |
+| `biohub/ESMC-300M` | 300M | ~0.6 GiB | comfortable |
+| `biohub/ESMC-600M` | 600M | ~1.2 GiB | comfortable |
+| `esm3-sm-open-v1` | 1.4B | ~2.8 GiB | fits in bf16; fp32 (~5.6 GiB) is tight |
+| `biohub/ESMC-6B` | 6B | ~12 GiB | does not fit — use the hosted client |
+| `biohub/ESMFold2` | — | — | activation-dominated; chunk long chains |
+
+Two consequences for an 8 GiB card. Load in reduced precision rather than the
+fp32 default, since `autocast_dtype()` returns `bfloat16` on Ampere and newer —
+it preserves fp32's exponent range, so unlike float16 it needs no loss scaling.
+And for folding, memory scales with sequence length through the activations
+rather than with the weights, so the limit you hit first is chain length, not
+checkpoint size; reduce the chunk size or fold a protomer instead of a trimer.
+Batch size for embeddings is bounded by the longest sequence in the batch, so
+sort by length before batching to avoid padding a short sequence to a long one.
+
 | Task | Local model/API | Hosted client/model |
 | --- | --- | --- |
 | ESM3 sequence/structure/function generation | `ESM3.from_pretrained("esm3-sm-open-v1")` | `client("esm3-medium-2024-08")`; small/large IDs in the ESM3 reference |
@@ -76,11 +141,14 @@ Illustrative pretrained inference; no weights or hosted jobs were run in this
 refresh. This toy sequence demonstrates API mechanics, not a functional design.
 
 ```python
+import sys; sys.path.insert(0, "scripts")
 import torch
 from esm.models.esm3 import ESM3
 from esm.sdk.api import ESMProtein, ESMProteinError, GenerationConfig
+from _device import select_device
 
-model = ESM3.from_pretrained("esm3-sm-open-v1", device=torch.device("cpu"))
+# GPU when present, CPU otherwise; SCI_DEVICE overrides both.
+model = ESM3.from_pretrained("esm3-sm-open-v1", device=torch.device(select_device()))
 prompt = "MPRT___KEND"
 completed = model.generate(
     ESMProtein(sequence=prompt),
@@ -118,8 +186,9 @@ tiny randomly initialized model on CPU. Add this skill's `scripts/` directory to
 ```python
 from esm.models.esmc import EsmcForMaskedLM, EsmcTokenizer
 from esm_embeddings import embed_sequences
+from _device import select_device
 
-model = EsmcForMaskedLM.from_pretrained("biohub/ESMC-300M", device="cpu").eval()
+model = EsmcForMaskedLM.from_pretrained("biohub/ESMC-300M", device=select_device()).eval()
 tokenizer = EsmcTokenizer()
 sequences = ["MPRTKEINDAGLIVHSPQWFYK", "ACDEFGHIK"]
 features = embed_sequences(model, tokenizer, sequences)
@@ -129,8 +198,10 @@ assert features.shape == (2, 960)
 `output.last_hidden_state` has shape `(B,T,D)` and includes CLS, EOS and padding;
 `T` is not the raw residue count. [scripts/esm_embeddings.py](scripts/esm_embeddings.py)
 performs one real padded batch, excludes special/padding tokens, validates the
-residue count, and returns `(B,D)` CPU features in input order. Choose batch size
-by sequence lengths and available memory. It does not truncate, download weights
+residue count, and returns `(B,D)` CPU features in input order. It needs no
+device argument: it moves inputs to wherever the model already lives and copies
+the result back to CPU, so putting the model on a GPU is the only change needed.
+Choose batch size by sequence lengths and available memory. It does not truncate, download weights
 or contact a service. See [ESMC](references/esm-c-api.md) for hosted output types,
 per-residue extraction, gradient behavior and migration details.
 
@@ -192,6 +263,13 @@ CPU tests and limitations. Run `python tests/run_all.py --isolated esm` from the
 repository to exercise synthetic local models, pooling, input serialization,
 PDB round trips and mocked hosted contracts. Pretrained ESM3/ESMC/ESMFold2,
 CUDA inference and authenticated services were not executed.
+
+`scripts/_device.py` was exercised only on a host without torch installed,
+which confirms the fallback path — it returns `cpu`, and `vram_gb()`,
+`autocast_dtype()` and `fits_in_vram()` return `None` instead of raising — and
+confirms that `SCI_DEVICE` is honored verbatim. The CUDA branch and the VRAM
+table above are unverified by execution; the first real GPU run should confirm
+both.
 
 Follow the selected model's terms and the
 [Biohub acceptable-use policy](https://biohub.org/acceptable-use-policy/).

@@ -12,6 +12,11 @@ flags, or pass a JSON config with ``--config`` (keys mirror the flag names with
 underscores). This is the fastest path from counts to a clustered, annotated-
 ready object; use the individual step scripts when you need to iterate on one stage.
 
+PCA, neighbors, UMAP and Leiden run on rapids-singlecell when a CUDA device is
+usable and on scanpy otherwise; everything else always runs on the CPU. Set
+``SCI_DEVICE=cpu`` to force the scanpy path. The two backends do not produce
+identical embeddings or cluster labels, so pin the backend before comparing runs.
+
 Examples:
     python run_pipeline.py raw.h5ad -o processed.h5ad
     python run_pipeline.py raw.h5ad -o processed.h5ad --resolution 0.8 --n-top-genes 3000
@@ -23,7 +28,7 @@ import argparse
 import json
 import os
 
-from _common import configure_scanpy, info, load_anndata, save_anndata, prepare_counts, normalize_hvg, compute_pca, build_neighbors, die, ensure_categories, integrate_harmony
+from _common import configure_scanpy, info, load_anndata, save_anndata, prepare_counts, normalize_hvg, compute_pca, build_neighbors, compute_umap, cluster_cells, die, ensure_categories, integrate_harmony
 
 
 def build_parser():
@@ -146,11 +151,10 @@ def main():
 
     info("[6/8] Neighbors + UMAP")
     build_neighbors(sc, work, n_neighbors=args.n_neighbors, n_pcs=args.n_pcs, use_rep=use_rep)
-    sc.tl.umap(work)
+    compute_umap(sc, work)
 
     info("[7/8] Leiden clustering")
-    sc.tl.leiden(work, resolution=args.resolution, flavor="igraph",
-                 n_iterations=2, directed=False)
+    cluster_cells(sc, work, algorithm="leiden", resolution=args.resolution, key="leiden")
     n_clusters = work.obs["leiden"].nunique()
     color = ["leiden"] + ([args.batch_key] if args.batch_key else [])
     sc.pl.umap(work, color=color, legend_loc="on data", show=False, save="_leiden.png")
@@ -168,9 +172,13 @@ def main():
     loadings = np.zeros((adata.n_vars, work.obsm["X_pca"].shape[1]), dtype=work.varm["PCs"].dtype)
     loadings[adata.var["highly_variable"].to_numpy()] = work.varm["PCs"]
     adata.varm["PCs"] = loadings
-    adata.uns["umap"] = work.uns["umap"].copy()
-    adata.uns["leiden"] = work.uns["leiden"].copy()
-    adata.uns["neighbors"] = work.uns["neighbors"]
+    # Scanpy always writes these parameter blocks; the GPU backend does not
+    # guarantee every one of them, so transfer whichever are present.
+    for key in ("umap", "leiden"):
+        if key in work.uns:
+            adata.uns[key] = work.uns[key].copy()
+    if "neighbors" in work.uns:
+        adata.uns["neighbors"] = work.uns["neighbors"]
     adata.obsp = work.obsp
 
     if not args.skip_markers and (n_clusters < 2 or work.obs["leiden"].value_counts().min() < 2):

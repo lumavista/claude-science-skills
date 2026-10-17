@@ -3,7 +3,7 @@
 A curated set of Claude skills for virology, immunology, antigen & epitope
 work, and vaccine design. Most are a trimmed subset of
 [K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills)
-(MIT), selected for these workflows; two skills are original to this repo and
+(MIT), selected for these workflows; four skills are original to this repo and
 two are locally modified.
 
 The full upstream repo exceeds the 100 MB skill-import limit, mostly from
@@ -51,6 +51,114 @@ workflow.
 | | `scientific-visualization` | Truthful, accessible, publication-ready figures with Matplotlib, Seaborn, or Plotly |
 | Study design | `experimental-design` | Chooses designs, randomizes, and blocks before data collection |
 | | `statistical-power` | Sample-size and power calculations for study planning |
+
+## Compute: GPU first, CPU fallback
+
+Every skill was audited for whether a GPU genuinely helps it. Where one does,
+the skill now selects a GPU automatically and falls back to CPU; where one does
+not, the skill says so and gives the reason, so the question does not get
+re-asked. **CPU always produces a correct result** — the GPU is an accelerator,
+never a requirement, and no skill fails because a GPU is absent.
+
+Reference host: Windows 11, **NVIDIA RTX 4060, 8 GiB VRAM**, driver 617.42.
+
+### How to control it
+
+`SCI_DEVICE` overrides autodetection everywhere: `SCI_DEVICE=cpu` forces a
+reproducible CPU run, `SCI_DEVICE=cuda` demands the GPU. The value is honored
+verbatim rather than validated, so a forced device fails loudly instead of
+silently running somewhere you did not ask for. `molecular-dynamics` also
+accepts `SCI_PLATFORM` and `SCI_PRECISION`.
+
+Each skill carries its own copy of the small selector — they are imported
+independently, so the duplication is deliberate. `skills/esm/scripts/_device.py`
+is the canonical version; `grep -rl SCI_DEVICE skills/` lists the copies.
+
+### Where the GPU is used
+
+| Skill | GPU route | Notes |
+|---|---|---|
+| `esm` | ESM3 / ESMC / ESMFold2 via torch | `scripts/_device.py`; bf16 on Ampere+ |
+| `molecular-dynamics` | OpenMM CUDA platform | `scripts/select_platform.py`; mixed precision |
+| `scanpy` | rapids-singlecell: PCA, neighbors, UMAP, Leiden | **WSL2 only** — see below |
+| `construct-assembly` | ThermoMPNN when scanning many mutants | CPU fine for a handful |
+| `immunoinformatics` | routing only | `references/compute-routes.md` |
+| `tamarind` | cloud GPU | for jobs exceeding 8 GiB |
+
+### Three constraints worth knowing before you debug
+
+**The default PyPI torch wheel on Windows is CPU-only.** Everything works and
+is merely slow, which is the hardest failure to notice. `torch.cuda.is_available()`
+returning `False` on this machine is almost always the wheel, not the hardware.
+Install from the `download.pytorch.org/whl/cu###` index.
+
+**rapids-singlecell has no native-Windows build.** RAPIDS supports Linux, or
+Windows 11 through WSL2; the RTX 4060 (compute capability 8.9) clears the
+hardware bar but native Windows does not clear the OS bar, so scanpy's GPU path
+simply never activates there and the CPU path runs. Worse on this platform,
+RAPIDS managed memory cannot oversubscribe VRAM under Windows or WSL, so an
+oversized run OOMs rather than spilling to host RAM — hence the skill's
+free-VRAM guard, which diverts a too-large matrix to the CPU instead.
+
+**8 GiB is the binding constraint, and it binds differently per workload.** For
+language models it is the weights: ESMC-300M/600M and `esm3-sm-open-v1` fit in
+bf16, ESMC-6B (~12 GiB of weights alone) does not and must use the hosted
+client. For folding it is chain length, through the activations rather than the
+checkpoint — fold a protomer before a trimer. For MD, VRAM is rarely the limit
+at all. `fits_in_vram()` applies the sizing arithmetic; it is a planning
+heuristic, not an allocation guarantee.
+
+### GPU results are not bitwise identical to CPU results
+
+This matters most in `scanpy`: cuML's UMAP and cuGraph's Leiden are separate
+implementations that a shared seed does not reconcile, and cuVS neighbors is
+exact where scanpy's default is approximate. Cluster IDs can therefore differ
+between backends at the same resolution, so **annotations keyed to cluster IDs
+do not survive a backend switch** — pin `SCI_DEVICE` and record which backend
+produced a result.
+
+### Where a GPU deliberately is not used
+
+Fourteen skills are CPU-bound. The eight where a reader might plausibly expect
+GPU acceleration now say why in their own `SKILL.md`; the rest are listed here
+only, because "it is an HTTP client" needs no note in the skill itself. The
+reasons are not interchangeable:
+
+- **Network-bound:** `paper-lookup`, `adaptyv`, `pathogen-variant-surveillance`
+  (aggregation happens server-side at GenSpectrum)
+- **IO / format-bound:** `anndata` (HDF5/Zarr codecs), `biopython`
+- **External non-GPU executable:** `phylogenetics` — neither FastTree nor
+  IQ-TREE has a CUDA path. BEAGLE's CUDA kernels serve Bayesian MCMC in
+  BEAST/MrBayes, a different inference method, so using them would mean
+  replacing the method rather than accelerating it.
+- **Already fast, or no GPU backend exists:** `pathway-enrichment` (GSEApy's
+  permutation core is a multi-threaded Rust extension), `pydeseq2` (no GPU
+  DESeq2 equivalent exists in Python), `scientific-visualization` (Matplotlib
+  rasterises through Agg)
+- **Too small to pay off:** `conservation-mapping`, `glycoengineering`,
+  `experimental-design`, `scientific-writing`
+- **Unbatchable by design:** `statistical-power` — the simulation harness
+  deliberately calls your exact statsmodels model per replicate
+- **Not applicable:** `vector-integration-analysis` never aligns reads; it
+  consumes provider junction calls and `samtools depth` output
+
+Three of these have a real speedup available that is *not* a GPU, left as
+opt-in rather than changed silently: `pydeseq2` defaults `--n-cpus 1` and
+`pathway-enrichment` defaults `--threads 4` — raising both toward the core
+count is the entire available win — while `statistical-power` benefits from
+numpy vectorisation in the closed-form cases and multiprocessing across
+replicates.
+
+### Verification status
+
+The CPU fallback paths were executed and behave correctly: with no GPU
+libraries installed, the selectors return CPU, the helpers return `None`
+instead of raising, `SCI_DEVICE` is honored, and `SCI_DEVICE=cuda` fails loudly
+with an install hint. All 65 Python files compile and all 21 frontmatter blocks
+parse. **The CUDA paths themselves have not been executed** — no GPU library
+was installed at the time of writing — and no benchmark numbers or speedups are
+quoted anywhere in this repo. The VRAM tables are arithmetic, not measurements.
+Confirm on first real GPU run.
 
 ## Original skills
 
@@ -182,7 +290,7 @@ standard Claude skill layout and also work anywhere else that loads
 ## License
 
 Upstream skills are MIT ([K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills)).
-Each skill states its own license in its `SKILL.md`. The two original skills
+Each skill states its own license in its `SKILL.md`. The four original skills
 (`immunoinformatics`, `conservation-mapping`, `construct-assembly`,
 `vector-integration-analysis`) carry their licenses in the
 same field.

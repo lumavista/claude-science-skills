@@ -2,10 +2,10 @@
 name: molecular-dynamics
 description: Runs and analyzes molecular dynamics simulations with OpenMM and MDAnalysis. Sets up protein/small molecule systems, defines force fields, runs energy minimization and production MD, and analyzes trajectories (RMSD, RMSF, contact maps, free energy surfaces). For structural biology, drug binding, and biophysics.
 license: MIT
-compatibility: Requires Python 3.11+ with OpenMM and MDAnalysis; matplotlib for plots. Optional PDBFixer and OpenFF need separate installation. Network access for installation; local simulation and analysis run offline.
+compatibility: Requires Python 3.11+ with OpenMM and MDAnalysis; matplotlib for plots. Runs on the CUDA platform by default and falls back to OpenCL, then CPU, when no GPU is verified; a CUDA-enabled OpenMM build and a current NVIDIA driver are needed for the GPU path. Optional PDBFixer and OpenFF need separate installation. Network access for installation; local simulation and analysis run offline.
 metadata:
-  version: "1.3"
-  last-reviewed: "2026-10-01"
+  version: "1.4"
+  last-reviewed: "2026-10-17"
   skill-author: Kuan-lin Huang
 ---
 
@@ -21,14 +21,136 @@ Molecular dynamics (MD) simulation computationally models the time evolution of 
 **Reviewed versions:** OpenMM 8.6.1 and MDAnalysis 2.10.0. Reference-platform
 smoke checks use small synthetic systems; GPU performance and scientific convergence
 are not established by them. OpenMM latest API pages identify a development build,
-so the installed 8.6.1 API is the executable reference.
+so the installed 8.6.1 API is the executable reference. The platform-selection
+script was reviewed against the 8.6.1 sources and exercised without OpenMM
+installed and against a stand-in API; no CUDA device was driven during that
+review, so run `python -m openmm.testInstallation` and
+`python scripts/select_platform.py` once on the target machine.
 
-**Installation into a dedicated environment:**
+**Installation into a dedicated environment.** Install the GPU build; the CUDA
+platform is the default this skill targets and the CPU platform ships with it
+anyway, so there is no CPU-only variant to choose separately.
+
 ```bash
 uv venv --python 3.12 .venv-md
-uv pip install --python .venv-md/bin/python "openmm==8.6.1" "MDAnalysis==2.10.0" matplotlib pandas
+uv pip install --python .venv-md/bin/python \
+    "openmm[cuda12]==8.6.1" "MDAnalysis==2.10.0" matplotlib pandas
 # Windows: use .venv-md/Scripts/python.exe instead
+# CUDA 13 driver and no need for CUDA 12 compatibility: "openmm[cuda13]==8.6.1"
 ```
+
+`openmm[cuda12]` pulls `OpenMM-CUDA-12`, which publishes a `win_amd64` wheel and
+brings its own `nvidia-cuda-nvrtc-cu12` and friends: the CUDA platform compiles
+its kernels at runtime through NVRTC, so a separate CUDA Toolkit installation is
+not required. Only the NVIDIA display driver must come from the system. Plain
+`openmm==8.6.1` still gives OpenCL, CPU and Reference, but no CUDA platform.
+
+Conda-forge is the equivalent route for a conda-managed environment; the CUDA
+series is selected by the `cuda-version` pin rather than an extra:
+
+```bash
+conda install -c conda-forge "openmm=8.6.1" "cuda-version=12.9"
+# or "cuda-version=13.0"; win-64 openmm 8.6.1 is built against 12.9 and 13.0 only
+```
+
+Pick the series the installed driver supports: `nvidia-smi` reports the highest
+CUDA version the driver can serve in its header, and conda exposes the same
+thing as the `__cuda` virtual package (`conda info`). Different CUDA major
+releases are not binary compatible, so the pin is not cosmetic.
+
+**Sharing an environment with PyTorch.** If OpenMM lands in an environment that
+already has a CUDA torch build, match the CUDA major version rather than
+letting pip resolve it: a torch built against CUDA 13 (`+cu132`) alongside
+`openmm[cuda12]` installs two parallel sets of `nvidia-*` runtime wheels, which
+wastes several GiB and makes a later breakage hard to attribute. Pair a cu13
+torch with `openmm[cuda13]`. A dedicated environment per stack avoids the
+question entirely and is the safer default when disk is not scarce.
+
+**Validate the install before trusting any run:**
+
+```bash
+python -m openmm.testInstallation
+```
+
+It prints the OpenMM version, lists every registered platform, computes forces
+for a test system on each one, and reports the force differences between them.
+A platform that is listed but errors here is a broken plugin, not a usable
+device. This is the right command to run after any driver update.
+
+## Platform Selection: GPU by Default, CPU as Fallback
+
+MD is the part of this skill that a GPU changes by orders of magnitude, so the
+default is the fastest platform that is **shown to work**, not the fastest one
+that is registered. OpenMM registers the CUDA platform whenever its plugin
+library loads; that happens with a mismatched driver, a missing device and a
+half-installed runtime alike. Registration is not a working device.
+
+[scripts/select_platform.py](scripts/select_platform.py) resolves this. It walks
+CUDA → OpenCL → CPU → Reference, and before accepting a platform it builds a
+tiny bonded/Lennard-Jones system, computes forces and takes ten steps on it. A
+platform that raises is skipped with its error recorded; the next one is tried.
+Nothing raises out of the selector itself, including when OpenMM is absent.
+
+```bash
+python scripts/select_platform.py   # prints version, registered platforms, choice, notes
+```
+
+```python
+from select_platform import select_platform, platform_report
+
+choice = select_platform()          # PlatformChoice(name, properties, verified, notes)
+print(platform_report(choice))      # e.g. "CUDA, precision=mixed, verified"
+simulation = Simulation(modeller.topology, system, integrator,
+                        **choice.simulation_kwargs())
+```
+
+- **Precision defaults to `mixed`** on CUDA/OpenCL, overriding OpenMM's `single`
+  default. `mixed` computes forces in single precision and integrates in double,
+  which is the correct trade on a consumer NVIDIA card: GeForce parts carry only
+  token FP64 hardware (reported at 1/64 of the FP32 rate on Ada), so `double` is
+  drastically slower, while `single` alone degrades energy conservation over
+  long integrations. Override per run with `SCI_PRECISION` or the `precision`
+  argument. In OpenMM 8 the property key is `Precision`; `CudaPrecision` is a
+  deprecated alias.
+- **`SCI_PLATFORM` (or the shared `SCI_DEVICE`) is honored verbatim**, modulo
+  capitalization, and is *not* verified — a forced platform must fail loudly at
+  Context creation rather than silently become something else. `SCI_PLATFORM=CPU`
+  is the escape hatch when a GPU misbehaves.
+- **Record the result.** Platform and precision change trajectories in detail
+  and belong in the provenance record; `platform_report()` returns the one-line
+  form. Checkpoints are platform-, hardware- and version-specific.
+- **What verification cannot catch:** a driver that hard-faults the process
+  rather than raising, and anything that depends on system size — a tiny system
+  passing says the platform runs, not that your system fits in VRAM or samples
+  fast enough.
+
+### Constraints on an 8 GB consumer card (RTX 4060 class)
+
+- **VRAM is rarely the MD bottleneck.** Device-side state is a handful of arrays
+  proportional to atom count — positions, velocities, forces, neighbor lists —
+  plus a PME grid and workspace that scale with box volume and cutoff. For the
+  10^4–10^5-atom solvated systems the workflow below builds, that is a small
+  fraction of 8 GB. Throughput, not memory, decides what you can sample: the
+  limit is how many nanoseconds per day the card produces, and the only honest
+  source for that number is your own system. Run a short NPT stage with
+  `StateDataReporter(..., speed=True)` and read the ns/day column; do not plan a
+  campaign from numbers measured on someone else's hardware or system.
+- **When VRAM does bind:** million-atom systems, very fine PME grids or large
+  cutoffs, several Contexts at once (replica exchange, parallel runs), and
+  whatever else already holds memory. On Windows the desktop compositor and a
+  browser take VRAM from the same 8 GB. Check free memory with `nvidia-smi`
+  before a long run; an out-of-memory failure appears when the real Context is
+  created, which the selector's tiny-system check cannot predict.
+- **GeForce on Windows runs under WDDM** (TCC is not available on consumer
+  cards), so kernel launches go through the display driver and the OS can
+  preempt them. A single kernel that runs long enough can trip the display
+  watchdog (TDR, two seconds by default) and take the context down with it.
+  Ordinary MD steps are far shorter than that; minimization on a very large
+  system is the realistic exposure. A run that dies with a device reset points
+  here.
+- **Driving the display from the same GPU** makes desktop interaction stutter
+  and makes `speed=True` timings noisy. Treat benchmark numbers taken on a
+  busy desktop as a lower bound.
 
 ## When to Use This Skill
 
@@ -52,6 +174,8 @@ establish binding free energy or residence time.
 
 The functions below form one Python module: execute their import blocks together.
 Use a new output prefix for every stage to avoid overwriting earlier results.
+`select_platform` is imported from this skill's `scripts/` directory; run from
+there or add it to `sys.path`.
 
 ### 1. System Preparation
 
@@ -115,6 +239,8 @@ from openmm.app import *
 from openmm import *
 from openmm.unit import *
 
+from select_platform import select_platform, platform_report
+
 def minimize_energy(modeller, system, output_pdb="minimized.pdb",
                      max_iterations=1000, tolerance=10.0, platform_name=None):
     """
@@ -126,6 +252,7 @@ def minimize_energy(modeller, system, output_pdb="minimized.pdb",
         output_pdb: Path to save minimized structure
         max_iterations: Maximum minimization steps
         tolerance: Convergence criterion in kJ/mol/nm
+        platform_name: Force a platform; None runs verified GPU-first selection
 
     Returns:
         simulation object with minimized positions
@@ -133,10 +260,13 @@ def minimize_energy(modeller, system, output_pdb="minimized.pdb",
     # Keep the integrator at 2 fs for the subsequent NVT/NPT examples.
     integrator = LangevinMiddleIntegrator(300*kelvin, 1/picosecond, 0.002*picoseconds)
 
-    # Automatic platform selection, or an explicit tested platform (e.g. CPU).
+    # GPU first, verified by actually running a tiny system, then CPU.
     # A registered GPU plugin does not prove a working device or driver.
-    platform = Platform.getPlatformByName(platform_name) if platform_name else None
-    simulation = Simulation(modeller.topology, system, integrator, platform)
+    # An explicit platform_name is honored without verification and fails loudly.
+    choice = select_platform(platform_name)
+    print(f"Platform: {platform_report(choice)}")  # record this with the run
+    simulation = Simulation(modeller.topology, system, integrator,
+                            **choice.simulation_kwargs())
     simulation.context.setPositions(modeller.positions)
 
     # Check initial energy
@@ -461,13 +591,17 @@ PDBFixer and OpenFF examples, installation requirements and current release deta
 - Assess burn-in, autocorrelation, effective samples, replicas and uncertainties.
   Short stable temperature/density traces do not establish conformational sampling.
 - Save topology/atom order, System/Integrator XML, force-field files/versions,
-  seeds, platform/precision, parameters and analysis selections. Checkpoints are
+  seeds, platform/precision (`platform_report()`), parameters and analysis
+  selections. Re-run `python -m openmm.testInstallation` after a driver or
+  OpenMM update before continuing a campaign on the same card. Checkpoints are
   platform/hardware/version specific; XML states are more portable but do not
   retain all internal random-generator state. Test restarting the actual setup.
 
 ## Additional Resources
 
 - **OpenMM documentation**: https://openmm.org/documentation.html
+- **OpenMM installation and GPU setup**: https://docs.openmm.org/latest/userguide/application/01_getting_started.html
+- **OpenMM platform-specific properties (Precision, DeviceIndex, Threads)**: https://docs.openmm.org/latest/userguide/library/04_platform_specifics.html
 - **MDAnalysis user guide**: https://docs.mdanalysis.org/
 - **GROMACS** (alternative MD engine): https://manual.gromacs.org/
 - **NAMD** (alternative): https://www.ks.uiuc.edu/Research/namd/

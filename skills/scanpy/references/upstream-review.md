@@ -35,6 +35,43 @@ missing raw counts from `.raw` or normalized values. CSV/Matrix Market readers n
 known orientation and cell/gene identifiers; bare MTX carries neither identifier
 list. `.h5` is assumed 10x HDF5, not arbitrary HDF5. Loom needs loompy.
 
+## Compute backend
+
+PCA, neighbors, UMAP and Leiden/Louvain dispatch through `_common.select_backend()`:
+[rapids-singlecell](https://rapids-singlecell.scverse.org/en/latest/installation.html)
+when CuPy reports a CUDA device and the import succeeds, scanpy otherwise.
+`SCI_DEVICE=cpu` forces scanpy; `SCI_DEVICE=cuda` makes an unusable backend an
+error instead of a silent downgrade. Autodetection swallows every failure
+(absent package, driver mismatch, no device) and returns the CPU path, so the
+scanpy results in the table above remain the reference in all cases. Each GPU
+step checks that it wrote the keys the toolkit reads (`obsm.X_pca`, `varm.PCs`,
+`uns.pca.variance_ratio`/`params`, `obsp.connectivities`, `uns.neighbors`,
+`obsm.X_umap`, the cluster `obs` column) and recomputes on the CPU otherwise;
+CuPy arrays are brought back to NumPy/SciPy before return, and `X`, layers and
+`.raw` are never converted.
+
+The backends are not interchangeable for reproducibility. GPU PCA has no ARPACK
+solver, so components match only up to sign and solver tolerance. GPU neighbors
+is cuVS exact brute force where scanpy's default pynndescent graph is
+approximate; upstream notes this as an expected difference, not a defect. cuML
+UMAP and cuGraph Leiden are independent implementations: cuGraph accepts neither
+`flavor="igraph"` nor `n_iterations=2` and counts iterations differently, so
+cluster labels and counts can differ at the same resolution. Record the backend
+with the run; annotations keyed to cluster IDs do not survive a switch.
+
+RAPIDS has no native-Windows build: NVIDIA's install matrix lists Linux
+(glibc>=2.28) and "Windows 11 using a WSL2 specific install (WSL1 not
+supported)", and rapids-singlecell publishes prebuilt wheels for x86_64 and
+aarch64 Linux only, requiring compute capability 7.0+. On native Windows the
+import fails and every script runs on the CPU. Memory is the other hard limit:
+before any device copy the scripts cost the matrix as float32 CSR with 32-bit
+indices, apply a workspace factor and compare against free VRAM, falling back to
+the CPU when it does not fit. RAPIDS managed memory cannot oversubscribe GPU
+memory on Windows or WSL, so an oversized run there fails rather than spills.
+Normalization, HVG, `regress_out`, `scale` and t-SNE stay on scanpy by choice:
+they act on the full-gene matrix or are optional side paths, and no speedup was
+measured on local hardware.
+
 ## Statistical and plotting interpretation
 
 `rank_genes_groups` defaults to `reference='rest'`; named reference groups and
@@ -102,6 +139,12 @@ partition graph, and cluster heatmaps are not automatically ordered by pseudotim
   requires the same ordered gene axis and compatible preprocessing in query and
   reference, with reference neighbors/PCA/UMAP as requested. No atlas mapping was
   executed in this refresh.
+- [rapids-singlecell install](https://rapids-singlecell.scverse.org/en/latest/installation.html)
+  (Linux x86_64/aarch64 wheels, CUDA 12/13, Turing+) and the
+  [RAPIDS install matrix](https://docs.nvidia.com/datascience/install/)
+  (Linux glibc>=2.28, or Windows 11 via WSL2; compute capability 7.0+; Pascal
+  dropped in 24.02). Optional GPU execution was not run in this refresh: the
+  review machine is native Windows, where the import fails by design.
 - [R conversion](r_interop.md): official signatures were checked, but R system
   installation/Seurat/zellkonverter/SeuratDisk conversions were not run. zellkonverter
   manages its own supported Python environment; do not assume the local Scanpy

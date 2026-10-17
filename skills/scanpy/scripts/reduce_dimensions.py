@@ -6,6 +6,10 @@ Takes a normalized object (optionally HVG-subset / scaled) and computes PCA,
 the kNN graph, and a UMAP (and optionally t-SNE) embedding. Writes a PCA
 variance-ratio elbow plot to help choose ``--n-pcs``.
 
+PCA, neighbors and UMAP run on rapids-singlecell when a CUDA device is usable
+and on scanpy otherwise; set ``SCI_DEVICE=cpu`` to force scanpy. The GPU
+embedding is not bitwise reproducible against the CPU one.
+
 Examples:
     python reduce_dimensions.py normalized.h5ad -o reduced.h5ad
     python reduce_dimensions.py normalized.h5ad -o reduced.h5ad --n-pcs 50 --n-neighbors 15
@@ -14,7 +18,7 @@ Examples:
 
 import argparse
 
-from _common import add_io_args, configure_scanpy, info, load_anndata, save_anndata, compute_pca, build_neighbors, die
+from _common import add_io_args, configure_scanpy, info, load_anndata, save_anndata, compute_pca, build_neighbors, compute_umap, die
 
 
 def main():
@@ -45,9 +49,11 @@ def main():
     build_neighbors(sc, adata, n_neighbors=args.n_neighbors, n_pcs=args.n_pcs,
                     use_rep=args.use_rep or "X_pca")
     info("Computing UMAP...")
-    sc.tl.umap(adata)
+    compute_umap(sc, adata)
 
     if args.tsne:
+        # t-SNE stays on scanpy: it is an optional side embedding, and cuML's
+        # perplexity/early-exaggeration behaviour is not a drop-in match.
         info("Computing t-SNE...")
         sc.tl.tsne(adata, use_rep=args.use_rep or "X_pca",
                    perplexity=min(30, max(1, (adata.n_obs - 1) / 3)), random_state=0)
