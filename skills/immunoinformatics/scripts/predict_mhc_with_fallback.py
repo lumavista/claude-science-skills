@@ -73,15 +73,17 @@ def detect_mhc_environment() -> Dict[str, Any]:
 
 
 def _setup_mhcflurry_models() -> None:
-    """Initialize MHCflurry model cache in writable directory."""
+    """Initialize MHCflurry model cache, preferring skill-bundled models."""
     model_dir = None
 
-    # Try to find/create a writable model cache
+    # Priority order: explicit env var > skill bundle > temp > home > cwd
+    skill_root = Path(__file__).parent.parent  # skills/immunoinformatics/
     candidates = [
-        os.environ.get("MHCFLURRY_MODELS_DIR"),
-        os.path.join(tempfile.gettempdir(), "mhcflurry_models"),
-        os.path.expanduser("~/.mhcflurry/models"),
-        os.path.join(os.getcwd(), ".mhcflurry_models"),
+        os.environ.get("MHCFLURRY_MODELS_DIR"),  # Explicit override
+        str(skill_root / "models" / "mhcflurry"),  # Bundled with skill
+        os.path.join(tempfile.gettempdir(), "mhcflurry_models"),  # Temp cache
+        os.path.expanduser("~/.mhcflurry/models"),  # User home
+        os.path.join(os.getcwd(), ".mhcflurry_models"),  # CWD
     ]
 
     for candidate in candidates:

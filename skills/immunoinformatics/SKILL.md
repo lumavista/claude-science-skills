@@ -31,6 +31,23 @@ II rankings with equal confidence.
 
 ```bash
 pip install "mhcflurry>=2.1" "biopython>=1.83" "pandas>=2.0" "requests>=2.31"
+```
+
+### Setup MHCflurry models (one-time)
+
+Download and cache MHCflurry models in the skill directory so they're available offline:
+
+```bash
+bash skills/immunoinformatics/setup_models.sh
+```
+
+This downloads presentation and affinity models to `skills/immunoinformatics/models/mhcflurry/`, 
+which the skill then uses automatically. Models are cached in git so subsequent runs don't require internet.
+
+If you prefer to manage the cache location yourself, set the environment variable before running:
+
+```bash
+export MHCFLURRY_MODELS_DIR=/path/to/your/models
 mhcflurry-downloads fetch models_class1_presentation
 ```
 

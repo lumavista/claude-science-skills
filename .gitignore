@@ -54,6 +54,10 @@ skills/vector-integration-analysis/**/junctions*.tsv
 !skills/*/assets/**
 !skills/*/references/**
 
+# Model caches (download on demand, don't commit)
+skills/immunoinformatics/models/
+skills/esm/models/
+
 # Credentials
 .env
 *.pem
