@@ -24,8 +24,9 @@ are not established by them. OpenMM latest API pages identify a development buil
 so the installed 8.6.1 API is the executable reference. The platform-selection
 script was reviewed against the 8.6.1 sources and exercised without OpenMM
 installed and against a stand-in API, including a CUDA plugin that fails to
-load. A Claude Science run on 2026-10-17 verified the CUDA platform on an 8 GiB consumer GPU under Windows with `openmm[cuda13]`, but only once the runtime DLL
-directory was on the search path (see the Windows note below). Run
+load. The CUDA platform was verified on an 8 GiB consumer GPU under Windows
+with `openmm[cuda13]`, but only once the runtime DLL directory was on the
+search path (see the Windows note below). Run
 `python scripts/select_platform.py` and the installation test below once on the
 target machine.
 
@@ -61,11 +62,12 @@ load, so a quiet OpenCL fallback is visible in the report.
 **Installing it under Claude Science.** Two obstacles, both measured 2026-10-17.
 Host-side pip refuses `--index-url` and the `name[extra]` form outright, so
 `openmm[cuda13]` must be installed by invoking pip as a subprocess inside the
-sandbox. And a deep workspace path can break the install even when the download
-succeeds: torch failed on a 279-character member path against a 260-character
-MAX_PATH with long paths off, and needed extraction to a `\\?\`-prefixed
-target. Keep the environment root short, or enable `LongPathsEnabled`. A
-workspace-resident venv also may not survive a sweep — budget a reinstall.
+sandbox. A deep workspace path breaks installs when long paths are off — torch
+failed on a 279-character member path against the 260-character MAX_PATH. With
+`LongPathsEnabled` = 1, `openmm[cuda13]` installed with plain pip at a deep
+workspace root, so enable it rather than shortening the root. The sandbox sets `PYTHONSAFEPATH=1`, so neither the
+current directory nor a script's own directory is on `sys.path`; add `scripts/`
+explicitly before `from select_platform import ...`. A workspace-resident venv also may not survive a sweep — budget a reinstall.
 `pdbfixer` failed to build on this host and was dropped; it is optional.
 
 Validate with `python -m openmm.testInstallation`, which lists every registered
@@ -73,9 +75,9 @@ platform, computes forces on each and reports inter-platform differences. A
 platform that is listed but errors there is a broken plugin, not a usable
 device — rerun it after any driver update. On Windows with the pip CUDA wheels,
 plain `python -m openmm.testInstallation` imports openmm without the DLL path
-and reports no CUDA platform on a working install; run it from `scripts/` as
-`python -c "import select_platform, runpy; runpy.run_module('openmm.testInstallation', run_name='__main__')"`
-so the DLL directories are on the path first.
+and reports no CUDA platform on a working install; run
+`python scripts/select_platform.py --test-installation` instead, which prepares
+the DLL directories and then runs the same test.
 
 ## Platform Selection: GPU by Default, CPU as Fallback
 
@@ -119,26 +121,26 @@ simulation = Simulation(modeller.topology, system, integrator,
   anything size-dependent: a tiny system passing proves the platform runs, not
   that your system fits in VRAM or samples fast enough.
 
-### Constraints on an 8 GB consumer card (8 GiB consumer card)
+### Constraints on an 8 GB consumer card
 
-**One reference point, measured 2026-10-17:** ~23k-atom solvated lysozyme
-(1AKI, AMBER14/TIP3P-FB, PME, 2 fs, HBonds constrained), NPT at 300 K/1 bar,
-`Precision=mixed` — **more than an order of magnitude faster than the CPU platform**, or
-far more sampling overnight. Throughput scales with atom count, cutoff and PME
-grid, so measure your own system with `StateDataReporter(..., speed=True)` on an
-idle desktop; the same run during a large download reported a measurably lower rate.
+**Expect a large speedup, but measure it.** On a ~23k-atom solvated protein
+(AMBER14/TIP3P-FB, PME, 2 fs, HBonds constrained) under NPT at 300 K/1 bar with
+`Precision=mixed`, CUDA ran more than an order of magnitude faster than the CPU
+platform. Throughput scales with atom count, cutoff and PME grid, so measure
+your own system with `StateDataReporter(..., speed=True)` on an idle desktop —
+background load on the machine measurably depresses the figure.
 
 - **VRAM is rarely the MD bottleneck**: device state scales with atom count plus
   a PME grid, a small fraction of 8 GB for the 10^4–10^5-atom systems below, so
   throughput is what decides how much you can sample.
 - **VRAM does bind** for million-atom systems, fine PME grids, large cutoffs or
-  several concurrent Contexts; on Windows the desktop shares the same 8 GB
-  (roughly 6 GiB usable), so check free memory with
-  `nvidia-smi` first — the selector's tiny-system check cannot predict a failure
-  at real Context creation.
+  several concurrent Contexts; on Windows the desktop shares the same 8 GB and
+  leaves roughly 6 GiB usable, so check free memory with `nvidia-smi` first —
+  the selector's tiny-system check cannot predict a failure at real Context
+  creation.
 - **Overflow does not announce itself.** A torch allocation past the card does
-  not raise on Windows; WDDM pages it to host RAM and throughput collapses
-  (measured 19–50× on a matmul). Expect a mysteriously slow run rather than an
+  not raise on Windows; WDDM pages it to host RAM and throughput collapses by
+  more than an order of magnitude. Expect a mysteriously slow run rather than an
   out-of-memory error, and suspect memory pressure when ns/day drops.
 - **GeForce on Windows runs under WDDM** (no TCC), so a long-running kernel can
   trip the ~2 s display watchdog and reset the context; ordinary steps are far
@@ -169,8 +171,8 @@ establish binding free energy or residence time.
 
 The functions below form one Python module: execute their import blocks together.
 Use a new output prefix for every stage to avoid overwriting earlier results.
-`select_platform` is imported from this skill's `scripts/` directory; run from
-there or add it to `sys.path`.
+`select_platform` is imported from this skill's `scripts/` directory; add it to
+`sys.path` (running from there is not enough under `PYTHONSAFEPATH=1`).
 
 ### 1. System Preparation
 

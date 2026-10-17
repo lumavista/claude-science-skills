@@ -4,10 +4,10 @@ Immunogen work spans steps that are trivial on a laptop and steps that need a
 datacentre. Being explicit about which is which is the difference between a
 workflow that completes and one that stalls silently partway through.
 
-The reference host for this collection is a **Windows 11 workstation with an
-an 8 GiB consumer GPU** . That changes the routing advice this file used to give: folding,
-inverse folding and embedding are now local operations for proteins of ordinary
-size, and the cloud is for what does not fit rather than for everything.
+The routing below assumes **a consumer GPU with roughly 8 GiB of VRAM**, which
+is what makes folding, inverse folding and embedding local operations for
+proteins of ordinary size: the cloud is for what does not fit, rather than for
+everything. Scale the thresholds to your own card.
 
 Verify before trusting. `nvidia-smi` reports the card and driver;
 `skills/esm/scripts/_device.py` reports what torch can actually reach. They
@@ -38,7 +38,7 @@ these on a GPU buys nothing; most are bound by IO, branching or small matrices:
 - Glycan shield grafting (GlycoSHIELD — avoiding MD is its whole contribution)
 
 **Tier 2 — local GPU, with CPU as a correct but slow fallback.** These are the
-steps that an 8 GiB card changes from "hand off" to "run here":
+steps an 8 GiB card changes from "hand off" to "run here":
 
 | Step | Local route | 8 GiB notes |
 |---|---|---|
@@ -46,7 +46,7 @@ steps that an 8 GiB card changes from "hand off" to "run here":
 | ESM3 generation | `esm3-sm-open-v1` (1.4B) | fits in bf16 (~2.8 GiB), not fp32 |
 | Inverse folding | ProteinMPNN / LigandMPNN / SolubleMPNN | small models, fast |
 | Point-mutant stability | ThermoMPNN (`construct-assembly`) | small; CPU is viable too |
-| MD | OpenMM CUDA platform (`molecular-dynamics`) | the clearest win on this card |
+| MD | OpenMM CUDA platform (`molecular-dynamics`) | the clearest win on a consumer card |
 
 **Folding is not in that table, and that is the surprise.** An 8 GiB card is
 not what blocks it on native Windows — the Python wheels are. `esmfold2`
@@ -63,12 +63,11 @@ So folding stays a Tier 3 hand-off here, for a platform reason rather than a
 memory one.
 
 WSL2 is the usual answer to a missing Linux wheel, and it does recover the JAX
-and Triton paths for manual work — but **not for a skill running under Claude
-Science**, which executes code in a native Windows sandbox with
-ACL-granted `C:\` roots and a loopback egress proxy. WSL is not a granted root,
-and shelling into the WSL VM would leave that sandbox behind. So WSL2 is a
-route for your own terminal, not a way to unblock an in-app skill. It does not
-recover VRAM either way, so the 24-80 GiB models stay out of reach regardless.
+and Triton paths for manual work — but **not for a skill running inside a
+sandboxed host application**, where stepping into the WSL VM would leave the
+sandbox the host deliberately imposes. So WSL2 is a route for your own
+terminal, not a way to unblock an in-app skill. It does not recover VRAM either
+way, so the 24-80 GiB models stay out of reach regardless.
 
 Reduced precision is the default worth taking: on Ampere and newer, bfloat16
 halves the weight footprint while keeping fp32's exponent range, so it needs no

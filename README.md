@@ -58,156 +58,62 @@ reference them by name resolve to the built-ins: `scvi-tools`,
 `literature-review`, `database-lookup`. `paper-lookup` is kept because it is raw
 multi-API search with provenance, not review methodology.
 
-## Compute: GPU first, CPU fallback
+## Compute
 
-Every skill was audited for whether a GPU genuinely helps. Where it does, the
-skill selects a GPU automatically and falls back to CPU; where it does not, the
-skill says so and why. **CPU always produces a correct result** — the GPU is an
-accelerator, never a requirement.
+Every skill was audited for whether a GPU genuinely helps it. Where it does, the
+skill selects one automatically and falls back to CPU; where it does not, the
+skill says so and why, so the question does not get re-asked. **CPU always
+produces a correct result** — the GPU is an accelerator, never a requirement,
+and no skill fails because a GPU is absent.
 
-`SCI_DEVICE` overrides autodetection everywhere (`cpu` forces a reproducible CPU
-run, `cuda` demands the GPU). It is honored verbatim rather than validated, so a
-forced device fails loudly. `molecular-dynamics` also accepts `SCI_PLATFORM` and
-`SCI_PRECISION`. Each skill carries its own copy of the selector — they import
-independently, so the duplication is deliberate;
-`skills/esm/scripts/_device.py` is canonical and `grep -rl SCI_DEVICE skills/`
-lists the copies.
+`SCI_DEVICE` overrides autodetection everywhere: `cpu` forces a reproducible CPU
+run, `cuda` demands a GPU. The value is honored verbatim rather than validated,
+so a forced device fails loudly instead of quietly running somewhere else.
+`molecular-dynamics` also accepts `SCI_PLATFORM` and `SCI_PRECISION`.
 
-Reference host: Windows 11, **an 8 GiB consumer GPU**.
+Six skills have a GPU route: `esm` (torch), `molecular-dynamics` (OpenMM CUDA),
+`scanpy` (rapids-singlecell), `construct-assembly` (ThermoMPNN, for large mutant
+scans), `tamarind` (cloud GPU), and `immunoinformatics` (routing only). Each
+carries its own copy of the device selector — the skills import independently,
+so the duplication is deliberate; `skills/esm/scripts/_device.py` is the
+canonical version and `grep -rl SCI_DEVICE skills/` lists the copies.
 
-| Skill | GPU route | Notes |
-|---|---|---|
-| `esm` | ESM3 / ESMC / ESMFold2 via torch | `scripts/_device.py`; bf16 on Ampere+ |
-| `molecular-dynamics` | OpenMM CUDA platform | `scripts/select_platform.py`; mixed precision |
-| `scanpy` | rapids-singlecell: PCA, neighbors, UMAP, Leiden | **WSL2 only** — see below |
-| `construct-assembly` | ThermoMPNN when scanning many mutants | CPU fine for a handful |
-| `immunoinformatics` | routing only | `references/compute-routes.md` |
-| `tamarind` | cloud GPU | for jobs exceeding the ~6 GiB usable budget |
+GPU availability is a packaging question as much as a hardware one: several
+accelerated stacks publish no wheel for every platform, so a GPU route can be
+unavailable on an otherwise capable machine. The skills detect this and fall
+back rather than failing. `skills/immunoinformatics/references/compute-routes.md`
+is the canonical routing document — which steps run locally on CPU, which use a
+local GPU, and which exceed it and go to a hosted or cloud route.
 
-### Four constraints worth knowing before you debug
+**GPU results are not bitwise identical to CPU results.** Mainly in `scanpy`:
+cuML's UMAP and cuGraph's Leiden are separate implementations that a shared seed
+does not reconcile, and cuVS neighbors is exact where scanpy's default is
+approximate. Cluster IDs can differ between backends at the same resolution, so
+annotations keyed to cluster IDs do not survive a backend switch — pin
+`SCI_DEVICE` and record which backend produced a result.
 
-**The default PyPI torch wheel on Windows is CPU-only.** Everything works and is
-merely slow — the hardest failure to notice. `torch.cuda.is_available()` being
-`False` here is almost always the wheel, not the hardware; install from the
-`download.pytorch.org/whl/cu###` index.
-
-**On native Windows, wheel availability gates more than VRAM does.** The card
-looks adequate and the failure is an install error, not an OOM:
-
-| Package | Windows wheel? | What it gates |
-|---|---|---|
-| `OpenMM-CUDA-12` / `-13` | **yes** | `molecular-dynamics` — works natively |
-| `cupy-cuda12x` | yes | CuPy arrays |
-| `rapids-singlecell` | **no** (sdist only) | `scanpy`'s GPU path |
-| `jax-cuda12/13-plugin` | **no** (manylinux only) | AlphaFold2/ColabFold — no CUDA JAX at all |
-| `flash-attn`, `deepspeed` | **no** (sdist only) | ESMFold2 fused kernels, scGPT, evo2 |
-| `triton` | **no** upstream | same (a community `triton-windows` fork exists) |
-
-So `scanpy`'s GPU path never activates on native Windows, and local folding is
-blocked for a platform reason rather than a memory one. Also: RAPIDS managed
-memory cannot oversubscribe VRAM under Windows or WSL, so an oversized run OOMs
-rather than spilling to host RAM — hence scanpy's free-VRAM guard, which diverts
-a too-large matrix to the CPU.
-
-**WSL2 is not a fix when these skills run under Claude Science.** The app
-executes skill code in a native Windows sandbox (ACL-granted `C:\`
-roots, private desktop, loopback egress proxy). WSL is not a granted root, and
-shelling into the WSL VM would leave that sandbox — which is what it exists to
-prevent. Treat WSL2 as a route for manual work; in-app, use the hosted clients,
-free notebooks, structure connector, or a cloud GPU route.
-
-**8 GiB binds differently per workload.** For language models it is the weights:
-ESMC-300M/600M and `esm3-sm-open-v1` fit in bf16; ESMC-6B (~12 GiB of weights
-alone) does not and must use the hosted client. For folding it is chain length,
-through activations rather than the checkpoint — fold a protomer before a
-trimer. For MD, VRAM is rarely the limit. `fits_in_vram()` applies the sizing
-arithmetic; it is a planning heuristic, not an allocation guarantee.
-
-### GPU results are not bitwise identical to CPU results
-
-Mainly in `scanpy`: cuML's UMAP and cuGraph's Leiden are separate
-implementations a shared seed does not reconcile, and cuVS neighbors is exact
-where scanpy's default is approximate. Cluster IDs can differ between backends at
-the same resolution, so **annotations keyed to cluster IDs do not survive a
-backend switch** — pin `SCI_DEVICE` and record which backend produced a result.
-
-### Where a GPU deliberately is not used
-
-Fourteen skills are CPU-bound; the reasons are not interchangeable. The eight
-where a reader might plausibly expect acceleration say why in their own
-`SKILL.md`.
-
-- **Network-bound:** `paper-lookup`, `adaptyv`, `pathogen-variant-surveillance`
-  (aggregation happens server-side at GenSpectrum)
-- **IO / format-bound:** `anndata` (HDF5/Zarr codecs), `biopython`
-- **External non-GPU executable:** `phylogenetics` — neither FastTree nor
-  IQ-TREE has a CUDA path. BEAGLE's CUDA kernels serve Bayesian MCMC in
-  BEAST/MrBayes, a different inference method, so using them would replace the
-  method rather than accelerate it.
-- **Already fast, or no GPU backend exists:** `pathway-enrichment` (GSEApy's
-  permutation core is a multi-threaded Rust extension), `pydeseq2` (no GPU
-  DESeq2 in Python), `scientific-visualization` (Matplotlib rasterises via Agg)
-- **Too small to pay off:** `conservation-mapping`, `glycoengineering`,
-  `experimental-design`, `scientific-writing`
-- **Unbatchable by design:** `statistical-power` — the simulation harness
-  deliberately calls your exact statsmodels model per replicate
-- **Not applicable:** `vector-integration-analysis` never aligns reads; it
-  consumes provider junction calls and `samtools depth` output
-
-Three have a real non-GPU speedup left opt-in rather than changed silently:
-`pydeseq2` defaults `--n-cpus 1` and `pathway-enrichment` defaults `--threads 4`
-(raising both toward the core count is the entire win), and `statistical-power`
-benefits from numpy vectorisation in closed-form cases and multiprocessing
-across replicates.
-
-### Verification status
-
-CPU fallback paths were executed and behave correctly: with no GPU libraries
-installed, selectors return CPU, helpers return `None` instead of raising,
-`SCI_DEVICE` is honored, and `SCI_DEVICE=cuda` fails loudly with an install
-hint. All 65 Python files compile and all 21 frontmatter blocks parse.
-
-The CUDA paths were exercised on the reference host (2026-10-17). torch CUDA and
-OpenMM's CUDA platform both work; MD measured a 23.6× speedup over the CPU
-platform, and bf16 runs 4.2× fp32, which is why `autocast_dtype()` prefers it.
-The per-run figures are recorded in `molecular-dynamics/SKILL.md`, where they
-are useful for planning, rather than here.
-
-Two of those results shape how the code is written, because both are failures
-that **raise no exception**:
-
-1. **OpenMM's CUDA platform needs the DLL fix** or it never registers and OpenMM
-   quietly serves OpenCL instead, so `select_platform` must be imported before
-   `openmm`. This is why platforms are verified by running them.
-2. **`torch.cuda.OutOfMemoryError` never fires on Windows.** WDDM pages GPU
-   allocations into host RAM rather than failing, so allocating well past the
-   card succeeds while throughput collapses (measured 19–50×). `fits_in_vram()`
-   is therefore the only guard available, and `try/except OutOfMemoryError` is
-   not a usable fallback. RAPIDS managed memory fails the opposite way, with a
-   real OOM — the two are not interchangeable.
-
-Usable budget is **~6 GiB of the 8 GiB card**, the desktop holding the rest;
-size against that, not the spec.
-
-Still unexecuted: the `esm` checkpoints themselves, the scanpy GPU backend
-(unavailable on native Windows), and the per-checkpoint VRAM table.
+The other fourteen skills are CPU-bound for reasons that are not
+interchangeable — network-bound, IO-bound, dependent on a non-GPU external
+executable, already fast, or too small to pay off — and each states its own.
+Three have a real speedup available that is not a GPU, left opt-in rather than
+changed silently: `pydeseq2` defaults to `--n-cpus 1` and `pathway-enrichment`
+to `--threads 4`, and `statistical-power` benefits from vectorisation in the
+closed-form cases and multiprocessing across replicates.
 
 ## Original skills
 
 **`immunoinformatics`** — MHC class I/II binding, B-cell epitope prediction,
-IEDB cross-referencing, conservation across circulating variants, self-similarity
-screening against the human proteome, HLA population coverage.
+IEDB cross-referencing, conservation across circulating variants,
+self-similarity screening against the human proteome, HLA population coverage.
 `scripts/epitope_triage.py` encodes the step ordering and writes a `.meta.json`
-sidecar per output so each result carries its tool versions.
-`scripts/mosaic_design.py` adds mosaic/cocktail construct design by k-mer
-coverage maximisation plus a junctional neo-epitope check; mosaic mode walks a de
-Bruijn graph built from the strain panel, so no k-mer absent from the panel can
-be constructed (the LANL Mosaic Vaccine Designer and EpiGraph could not be
-confirmed live as of 2026-10, so the algorithm is implemented directly).
-`references/tool-licensing.md` records versions and licences for every predictor,
-folding model and design tool in the collection, including code-versus-weights
-splits, and corrects NetMHCpan to 4.2e. `references/compute-routes.md` is the
-collection's canonical compute-routing doc.
+sidecar per output, so every result carries its tool versions.
+`scripts/mosaic_design.py` adds mosaic and cocktail construct design by k-mer
+coverage maximisation plus a junctional neo-epitope check; mosaic mode walks a
+de Bruijn graph built from the strain panel, so no k-mer absent from the panel
+can be constructed. `references/tool-licensing.md` records versions and licences
+for every predictor, folding model and design tool the collection touches,
+including the code-versus-weights splits a single licence field would
+misrepresent.
 
 **`conservation-mapping`** — Per-position conservation with Henikoff sequence
 weighting, reporting effective sample size so a clade-skewed panel cannot
@@ -221,31 +127,30 @@ Alignment is delegated to `phylogenetics`.
 **`construct-assembly`** — The parts of a construct that are not the antigen:
 linker family and length, trimerisation and display domains, tag placement,
 signal peptides, junction scanning. Adds ThermoMPNN point-mutant stability and a
-dependency-free local developability screen (free cysteines, designed-in
-sequons, deamidation and isomerisation motifs, hydrophobic patches, GRAVY, pI).
-Inverse folding, de novo design and refolding are delegated to `tamarind` so they
-cannot drift out of sync with its live schema discovery.
+dependency-free developability screen (free cysteines, designed-in sequons,
+deamidation and isomerisation motifs, hydrophobic patches, GRAVY, pI). Inverse
+folding, de novo design and refolding are delegated to `tamarind` so they cannot
+drift out of sync with its live schema discovery.
 
 **`vector-integration-analysis`** — Characterizes integrated vector sequence in
-stable cell lines (how many integration sites, where, and copy number) from
+stable cell lines — how many integration sites, where, and copy number — from
 whole-genome or targeted insertion-site sequencing.
 
 ## Local modifications
 
 **`tamarind`** — Scope narrowed to de novo, binder, and antibody design and
 developability, with fewer trigger keywords and an added `## Scope` section. As
-shipped upstream it competed with Claude Science featured skills for plain
+shipped upstream it competed with the Claude Science featured skills for plain
 structure prediction, docking and embeddings (AlphaFold2, Boltz, Chai-1,
-ESMFold2, OpenFold3, DiffDock, ESM-2); it now defers to those and submits a cloud
-job only under a stated condition — explicit request, insufficient local VRAM, or
-batch size. Also records Tamarind's account-free key provisioning (a single POST
-to `/api/agent/provision`), since the missing credential is what otherwise makes
-the cloud tier unreachable.
+ESMFold2, OpenFold3, DiffDock, ESM-2); it now defers to those and submits a
+cloud job only under a stated condition — explicit request, insufficient local
+VRAM, or batch size. Also records Tamarind's account-free key provisioning,
+since the missing credential is what otherwise makes the cloud tier unreachable.
 
 **`phylogenetics`** — Made cross-platform. Upstream assumes MAFFT and IQ-TREE
 executables; the skill now prefers wheel-based aligners (`pyfamsa` for MSA,
-`pyhmmer` for profile alignment, `parasail`/Biopython for pairwise) and runs end
-to end with FastTree where IQ-TREE is unavailable, stating what is lost
+`pyhmmer` for profile alignment, `parasail`/Biopython for pairwise work) and
+runs end to end with FastTree where IQ-TREE is unavailable, stating what is lost
 (ModelFinder, ultrafast bootstrap, SH-aLRT) rather than letting a write-up imply
 a full ML analysis. Several upstream defects found by running the code — a
 temp-file rename failure, a silently skipped tree-collapse check, and an amino
@@ -267,8 +172,8 @@ skills — descriptions, instructions, skill selections, connectors.
 
 Claude Science has no specialist import/export, so `specialists.yaml` is
 documentation, not something the app can load. Re-enter a specialist by hand
-under **Settings > Specialists**. Re-importing this repo clears each specialist's
-skill selections, so re-select them afterward.
+under **Settings > Specialists**. Re-importing this repo clears each
+specialist's skill selections, so re-select them afterward.
 
 ## Conventions
 
@@ -283,8 +188,8 @@ different times, and the weight that matters is in the first two:
 | `references/`, `assets/` | on demand only | detail belongs here |
 
 1. **SKILL.md orients; references hold detail.** A passage restating upstream
-   library docs belongs in a reference or behind a link — it is also the main
-   maintenance liability, since it goes stale silently.
+   library documentation belongs in a reference or behind a link — it is also
+   the main maintenance liability, since it goes stale silently.
 2. **Caveats are one sentence.** Correctness, determinism and "what was not
    tested" notes stay, compressed to the claim. They are the point of this
    collection; do not delete them to save space.
@@ -292,13 +197,15 @@ different times, and the weight that matters is in the first two:
    reference nobody links to is dead weight.
 4. **No tutorial prose.** The reader already knows Python and the science.
 
-Two skills deliberately sit above the trend: `molecular-dynamics` (its four
-simulation stages are distinct functions sharing one simulation object, not the
-copy-paste they resemble) and `scientific-writing` (stopped at −21% because the
-remainder is normative safety rules, where cutting means deleting rules).
+Two skills deliberately sit above the trend: `molecular-dynamics`, whose four
+simulation stages are distinct functions sharing one simulation object rather
+than the copy-paste they resemble, and `scientific-writing`, which stopped at
+−21% because the remainder is normative safety rules, where cutting further
+means deleting rules rather than compressing them.
 
 ## License
 
 Upstream skills are MIT
 ([K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills)).
-Each skill, original ones included, states its own license in its `SKILL.md`.
+Each skill, the original ones included, states its own license in its
+`SKILL.md`.

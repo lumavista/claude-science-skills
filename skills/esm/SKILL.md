@@ -80,7 +80,7 @@ bite:
   torch at 119–127 characters depending on build, setuptools at 113 and
   `jupyterlab_widgets` at 161, the last of which alone caps an env root near 80
   characters. Measure the resolved set, or remove the limit: `LongPathsEnabled`
-  was set to 1 on the reference host and a fresh process honors it at the OS
+  was set to 1 during testing and a fresh process honors it at the OS
   level (a 451-character path round-tripped with no `\\?\` prefix), but a pip
   install at workspace depth has not been re-run under it, so treat the failure
   as probably retired rather than proven gone. A short env root outside the
@@ -104,13 +104,13 @@ parameter plus ~⅓ for activations and fragmentation, which is what
 `fits_in_vram()` applies. Neither Biohub nor EvolutionaryScale publishes
 per-checkpoint VRAM requirements, so confirm by running rather than trusting it.
 Budget against usable memory, not the card's spec: a display-attached 8 GiB card
-measured ~6 GiB free, which is why `fits_in_vram()` subtracts a reserve and
+leaves roughly 6 GiB free, which is why `fits_in_vram()` subtracts a reserve and
 why the fp32 row below is out rather than merely tight.
 
 **The bf16 column is not what you get by default.** The documented loading path
 (`from_pretrained` then `embed_sequences`) loads fp32 and never applies
 `autocast_dtype()`, so the real cost is roughly double the column: ESMC-300M
-measured a ~1.3 GiB peak, against the ~0.6 GiB the table implies. Cast
+measured a peak near 1.3 GiB, against the ~0.6 GiB the table implies. Cast
 explicitly to claim the bf16 figures, and read the column as the floor
 available with a cast rather than the default.
 
@@ -297,11 +297,11 @@ inference and authenticated services were not executed.
 
 `scripts/_device.py` is verified on both branches: the CPU fallback (no torch
 installed — returns `cpu`, helpers return `None` rather than raising, and
-`SCI_DEVICE` is honored) and the CUDA branch, where `device_report()` returned
-`cuda (<GPU name>, 8.0 GiB)` on the reference host in 2026-10. Note
-that it reports total memory, not the ~6 GiB usable, which is why
-`fits_in_vram()` subtracts a reserve. The per-checkpoint VRAM column remains
-arithmetic apart from ESMC-300M, whose fp32 default measured a ~1.3 GiB peak.
+`SCI_DEVICE` is honored) and the CUDA branch, tested on an 8 GiB consumer GPU.
+Note that `device_report()` reports total memory, not the smaller usable figure
+a display-attached card actually offers, which is why `fits_in_vram()` subtracts
+a reserve. The per-checkpoint VRAM column remains arithmetic apart from
+ESMC-300M, whose fp32 default was measured.
 
 Follow the selected model's terms and the
 [Biohub acceptable-use policy](https://biohub.org/acceptable-use-policy/).

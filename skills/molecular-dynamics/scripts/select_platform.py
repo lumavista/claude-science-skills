@@ -228,7 +228,7 @@ def platform_properties(name: str, *, precision: str | None = None) -> dict[str,
     default. 'mixed' computes forces in single precision and accumulates and
     integrates in double, which is the right default for MD on a consumer
     NVIDIA card: GeForce parts carry only token FP64 hardware (reported at 1/64
-    of the FP32 rate on Ada, a consumer card's architecture), so 'double' is
+    of the FP32 rate on Ada, for instance), so 'double' is
     drastically slower there, while plain 'single' degrades energy conservation
     in long integrations. Override with the `precision` argument or SCI_PRECISION
     when a specific study needs 'single' speed or 'double' accuracy.
@@ -429,5 +429,23 @@ def _main() -> None:
         print(f"  - {note}")
 
 
+def _test_installation() -> int:
+    """Run openmm.testInstallation after the DLL path is prepared (module import).
+
+    Plain `python -m openmm.testInstallation` on Windows imports openmm before
+    anything can fix the DLL search path, so it hides a working CUDA platform.
+    """
+    import runpy
+
+    try:
+        runpy.run_module("openmm.testInstallation", run_name="__main__")
+    except ImportError as err:
+        print(f"OpenMM not installed ({err}).")
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
+    if "--test-installation" in sys.argv[1:]:
+        sys.exit(_test_installation())
     _main()
