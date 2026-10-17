@@ -31,6 +31,7 @@ version requirements or output types with this SDK.
 ```bash
 uv venv --python 3.12 .venv-esm
 uv pip install --python .venv-esm/bin/python "esm==3.4.1.post1"
+# Windows: .venv-esm/Scripts/python.exe
 ```
 
 The release declares Python >=3.12, Torch >=2.11,<2.12 and Transformers
@@ -74,26 +75,22 @@ bite:
   `name[extra]` form, so the CUDA torch install above must run with pip invoked
   as a subprocess inside the sandbox.
 - With long paths disabled, the install dies partway on `MAX_PATH` even though
-  the wheel downloads cleanly. Do not plan around a remembered number: the
-  binding file is whichever resolved wheel has the deepest member, it is not
-  necessarily torch, and it moves with the version — measured examples include
-  torch at 119–127 characters depending on build, setuptools at 113 and
-  `jupyterlab_widgets` at 161, the last of which alone caps an env root near 80
-  characters. Measure the resolved set, or remove the limit: `LongPathsEnabled`
-  was set to 1 during testing and a fresh process honors it at the OS
-  level (a 451-character path round-tripped with no `\\?\` prefix), but a pip
-  install at workspace depth has not been re-run under it, so treat the failure
-  as probably retired rather than proven gone. A short env root outside the
-  workspace is **not** an escape here — paths like `C:\venvs\esm` are
-  unreachable from the sandbox, and `subst` is denied. Failing that, extracting
-  the resolved wheels into a `\\?\`-prefixed site-packages works, as does
-  skipping local weights for the hosted client.
-- `huggingface_hub` raises `WinError 1314` creating symlinks; set
-  `HF_HUB_DISABLE_SYMLINKS=1`.
+  the wheel downloads cleanly. The binding file is whichever resolved wheel has
+  the deepest member — not necessarily torch (`jupyterlab_widgets` alone caps
+  an env root near 80 characters), and it moves with the version. Enable
+  `LongPathsEnabled` (HKLM, then restart the app): with it on, the full stack
+  installed with plain pip at workspace depth. A short root outside the
+  workspace is **not** an alternative — the sandbox cannot reach paths like
+  `C:\venvs\esm` — so without long paths, use the hosted client.
+- If `huggingface_hub` raises `WinError 1314` creating symlinks, set
+  `HF_HUB_DISABLE_SYMLINKS=1`; it did not recur on a later run, so set it only
+  when the error appears.
 - `USERNAME` is unset in the sandbox, so `getpass.getuser()` fails and
-  `torch._inductor` raises `ModuleNotFoundError: 'pwd'`. Set
-  `TORCHINDUCTOR_CACHE_DIR`. The same unset variable is why `parmed` needs
-  `os.environ["USERNAME"]` set before import — one defect, two symptoms.
+  `torch._inductor` raises `ModuleNotFoundError: 'pwd'` — during an ordinary
+  eager `from_pretrained`, not only under `torch.compile`. Set
+  `TORCHINDUCTOR_CACHE_DIR` before loading any model. The same unset variable
+  is why `parmed` needs `os.environ["USERNAME"]` set before import — one
+  defect, two symptoms.
 
 `torch.compile` is unavailable on native Windows regardless: it needs Triton,
 which publishes no `win_amd64` wheel, so eager execution is the only local mode
@@ -107,16 +104,16 @@ Budget against usable memory, not the card's spec: a display-attached 8 GiB card
 leaves roughly 6 GiB free, which is why `fits_in_vram()` subtracts a reserve and
 why the fp32 row below is out rather than merely tight.
 
-**The bf16 column is not what you get by default.** The documented loading path
-(`from_pretrained` then `embed_sequences`) loads fp32 and never applies
-`autocast_dtype()`, so the real cost is roughly double the column: ESMC-300M
-measured a peak near 1.3 GiB, against the ~0.6 GiB the table implies. Cast
-explicitly to claim the bf16 figures, and read the column as the floor
-available with a cast rather than the default.
+**The bf16 column needs the cast before the move.** `from_pretrained` loads
+fp32, and casting a model already on the GPU does not lower the peak: the fp32
+copy is allocated first. ESMC-300M peaked near 1.3 GiB either loaded plain or
+cast on the GPU, against the ~0.6 GiB the table implies. Load on CPU, cast,
+then move, as the ESMC example below does; that the peak then matches the
+column is expected but not yet measured.
 
 | Checkpoint | Params | bf16 weights (with an explicit cast) | On an 8 GiB card |
 | --- | --- | --- | --- |
-| `biohub/ESMC-300M` | 300M | ~0.6 GiB (fp32 default measured 1.3 GiB peak) | comfortable |
+| `biohub/ESMC-300M` | 300M | ~0.6 GiB (fp32, or cast on GPU, peaked near 1.3 GiB) | comfortable |
 | `biohub/ESMC-600M` | 600M | ~1.2 GiB (~2.4 GiB in fp32) | comfortable |
 | `esm3-sm-open-v1` | 1.4B | ~2.8 GiB | fits in bf16; fp32 (~5.6 GiB) will not |
 | `biohub/ESMC-6B` | 6B | ~12 GiB | does not fit — use the hosted client |
@@ -212,14 +209,16 @@ tiny randomly initialized model on CPU. Add this skill's `scripts/` directory to
 ```python
 from esm.models.esmc import EsmcForMaskedLM, EsmcTokenizer
 from esm_embeddings import embed_sequences
-from _device import select_device
+from _device import select_device, autocast_dtype
 
 device = select_device()
-model = EsmcForMaskedLM.from_pretrained("biohub/ESMC-300M", device=device).eval()
-# from_pretrained loads fp32; cast explicitly or pay roughly double the VRAM.
+# from_pretrained loads fp32: cast on CPU before moving, or the GPU holds the
+# fp32 copy first and the peak is roughly double.
+model = EsmcForMaskedLM.from_pretrained("biohub/ESMC-300M", device="cpu").eval()
 dtype = autocast_dtype(device)
 if dtype is not None:
     model = model.to(dtype)
+model = model.to(device)
 tokenizer = EsmcTokenizer()
 sequences = ["MPRTKEINDAGLIVHSPQWFYK", "ACDEFGHIK"]
 features = embed_sequences(model, tokenizer, sequences)
