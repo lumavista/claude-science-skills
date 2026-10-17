@@ -167,18 +167,44 @@ installed, selectors return CPU, helpers return `None` instead of raising,
 `SCI_DEVICE` is honored, and `SCI_DEVICE=cuda` fails loudly with an install
 hint. All 65 Python files compile and all 21 frontmatter blocks parse.
 
-Exactly one CUDA path is confirmed: **OpenMM's CUDA platform on an 8 GiB consumer GPU under
-Windows (2026-10-17) with `openmm[cuda13]`** — but only after putting the pip
-`nvidia-*` runtime DLL directory on the search path. Without that the plugin
-fails with error 126, never registers, and OpenMM quietly serves OpenCL as
-though nothing were wrong; importing `select_platform` before `openmm` fixes it
-and surfaces any plugin load failure. That is the sharpest lesson here: a GPU
-path can fail by silently downgrading rather than erroring.
+The CUDA paths were measured on the reference host (8 GiB consumer GPU, 8 GiB, Windows,
+2026-10-17). These numbers are measured; anything not listed is still arithmetic.
 
-Everything else is unexecuted — the torch/`esm` CUDA branch, the scanpy GPU
-backend (unavailable on native Windows anyway), and every VRAM table, which is
-arithmetic rather than measurement. No benchmark numbers or speedups are quoted
-anywhere in this repo.
+| Measured | Result |
+|---|---|
+| MD, ~23k-atom solvated lysozyme, NPT, `Precision=mixed` | **a much higher rate CUDA vs 13.6 CPU — 23.6×** |
+| fp32 matmul (4096³) | a higher throughput vs 0.55 CPU — 14.9× |
+| tf32 / fp16 / bf16 matmul | bf16 several times fp32 |
+| Usable VRAM | ~6 GiB working set (7074 of 8 GiB free; desktop holds about a GiB) |
+| OpenMM platforms | 3 registered raw, 4 with the DLL fix, 0 plugin failures |
+| torch CUDA | a CUDA build, , `is_available()` true inside the sandbox |
+| `torch.compile` | unavailable — Triton has no Windows wheel |
+
+A ns/day figure means nothing without its system, hence the atom count and
+ensemble; that run held 300 K and 1.03 g/mL, so it is physically sound and not
+merely fast. Overnight it is ~157 ns in 12 h against 6.7 ns on the CPU. It also
+needs a quiet machine — an otherwise identical pass taken while a 2 GB download
+ran reported a measurably lower rate with a drifting speed column. **bf16 is 4.2× fp32 here**,
+which is why `autocast_dtype()` prefers it on Ampere and newer: size a model
+against a higher throughput, not 8.3.
+
+Two measured findings changed how this repo is written, both failures that never
+raise an exception:
+
+1. **OpenMM's CUDA platform needs the DLL fix** or it never registers and OpenMM
+   quietly serves OpenCL instead, so `select_platform` must be imported before
+   `openmm`.
+2. **`torch.cuda.OutOfMemoryError` never fires on Windows.** an oversized allocation was
+   allocated while `mem_get_info` reported 0 free, because WDDM pages GPU
+   allocations into host RAM rather than failing. What breaks is throughput: the
+   matmul held full speed near budget, then far slower past it — a 19–50×
+   silent cliff. So `fits_in_vram()` is the only guard available, and
+   `try/except OutOfMemoryError` is not a usable fallback here. RAPIDS managed
+   memory fails the opposite way, with a real OOM; the two are not
+   interchangeable.
+
+Still unexecuted: the `esm` checkpoints themselves, the scanpy GPU backend
+(unavailable on native Windows), and the per-checkpoint VRAM table.
 
 ## Original skills
 

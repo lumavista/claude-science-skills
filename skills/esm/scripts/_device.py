@@ -47,8 +47,10 @@ def select_device(prefer: str | None = None) -> str:
 def vram_gb(device: str | None = None) -> float | None:
     """Total memory of the selected CUDA device in GiB, or None if not CUDA.
 
-    Returns total, not free, memory: it is the stable number to plan a model
-    against. Check free memory at allocation time if a run must share the card.
+    Returns total, not free, memory: it is the stable number to plan against.
+    Free memory is the less useful number than it looks on Windows, where
+    `mem_get_info` reports 0 free under pressure while allocations keep
+    succeeding -- see `fits_in_vram` for why that matters.
     """
     device = device or select_device()
     if not device.startswith("cuda"):
@@ -89,6 +91,16 @@ def fits_in_vram(params_billions: float, *, bytes_per_param: int = 2,
     `overhead` covers activations, workspace and allocator fragmentation. This
     is a planning heuristic for picking a checkpoint, not an allocation
     guarantee -- a long sequence can still exceed it through activation growth.
+
+    On Windows this heuristic is the ONLY guard available, because the usual
+    backstop does not exist. Measured on an 8 GiB consumer GPU (8 GiB) in 2026-10:
+    allocating past the card never raised `torch.cuda.OutOfMemoryError` -- an oversized allocation was accepted while `mem_get_info` reported 0 free, because WDDM pages
+    GPU allocations into host RAM instead of failing. What breaks is throughput,
+    silently: a 4096-cube fp32 matmul held full speed within budget,
+    then collapsed once the budget was exceeded, an order-of-magnitude
+    cliff with no exception to catch. So returning False here is a reason not to
+    proceed, and `try/except OutOfMemoryError` is not a usable fallback on this
+    platform. Budget against roughly ~6 GiB of a display-attached 8 GiB card.
     """
     total = vram_gb(device)
     if total is None:

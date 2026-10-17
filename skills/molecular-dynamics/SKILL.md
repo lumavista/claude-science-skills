@@ -58,6 +58,16 @@ those directories on the path, which works only if it is imported before the
 first `import openmm` in the process; its `notes` list any plugin that failed to
 load, so a quiet OpenCL fallback is visible in the report.
 
+**Installing it under Claude Science.** Two obstacles, both measured 2026-10-17.
+Host-side pip refuses `--index-url` and the `name[extra]` form outright, so
+`openmm[cuda13]` must be installed by invoking pip as a subprocess inside the
+sandbox. And a deep workspace path can break the install even when the download
+succeeds: torch failed on a 279-character member path against a 260-character
+MAX_PATH with long paths off, and needed extraction to a `\\?\`-prefixed
+target. Keep the environment root short, or enable `LongPathsEnabled`. A
+workspace-resident venv also may not survive a sweep — budget a reinstall.
+`pdbfixer` failed to build on this host and was dropped; it is optional.
+
 Validate with `python -m openmm.testInstallation`, which lists every registered
 platform, computes forces on each and reports inter-platform differences. A
 platform that is listed but errors there is a broken plugin, not a usable
@@ -107,20 +117,35 @@ simulation = Simulation(modeller.topology, system, integrator,
 
 ### Constraints on an 8 GB consumer card (8 GiB consumer card)
 
+**Measured once, 2026-10-17**, so there is a reference point rather than only a
+method: ~23k-atom solvated lysozyme (1AKI, AMBER14/TIP3P-FB, 10 Å padding,
+0.15 M NaCl, PME, 2 fs, HBonds constrained), NPT at 300 K/1 bar,
+`Precision=mixed` — **a much higher rate on CUDA against 13.6 on the CPU platform, a
+23.6× speedup**, holding 300 K and 1.03 g/mL. That is ~157 ns overnight versus
+6.7 ns on the CPU. Still measure your own system with
+`StateDataReporter(..., speed=True)`: throughput scales with atom count, cutoff
+and PME grid, so this figure transfers only to systems of about this size.
+
 - **VRAM is rarely the MD bottleneck**: device state scales with atom count plus
   a PME grid, a small fraction of 8 GB for the 10^4–10^5-atom systems below, so
-  throughput decides what you can sample — measure ns/day on your own system
-  with `StateDataReporter(..., speed=True)` rather than trusting others' numbers.
+  throughput is what decides how much you can sample.
 - **VRAM does bind** for million-atom systems, fine PME grids, large cutoffs or
-  several concurrent Contexts; on Windows the desktop shares the same 8 GB, so
-  check free memory with `nvidia-smi` first — the selector's tiny-system check
-  cannot predict an OOM at real Context creation.
+  several concurrent Contexts; on Windows the desktop shares the same 8 GB
+  (roughly 6 GiB usable), so check free memory with
+  `nvidia-smi` first — the selector's tiny-system check cannot predict a failure
+  at real Context creation.
+- **Overflow does not announce itself.** A torch allocation past the card does
+  not raise on Windows; WDDM pages it to host RAM and throughput collapses
+  (measured 19–50× on a matmul). Expect a mysteriously slow run rather than an
+  out-of-memory error, and suspect memory pressure when ns/day drops.
 - **GeForce on Windows runs under WDDM** (no TCC), so a long-running kernel can
   trip the ~2 s display watchdog and reset the context; ordinary steps are far
   shorter, but minimization on a very large system is the realistic exposure,
   and a run dying with a device reset points here.
-- **Driving the display from the same GPU** makes `speed=True` timings noisy;
-  treat numbers from a busy desktop as a lower bound.
+- **Driving the display from the same GPU** makes `speed=True` timings noisy: an
+  otherwise identical run taken during a 2 GB download reported a measurably lower rate with
+  a drifting speed column against 323 on a quiet machine. Benchmark on an idle
+  desktop and treat busy-desktop numbers as a lower bound.
 
 ## When to Use This Skill
 
