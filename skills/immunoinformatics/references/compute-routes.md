@@ -44,10 +44,25 @@ steps that an 8 GiB card changes from "hand off" to "run here":
 |---|---|---|
 | ESMC embeddings | `esm` skill, 300M/600M | comfortable; 6B does not fit |
 | ESM3 generation | `esm3-sm-open-v1` (1.4B) | fits in bf16 (~2.8 GiB), not fp32 |
-| Single-sequence folding | ESMFold-class | limited by chain length, not weights |
-| Inverse folding | ProteinMPNN / LigandMPNN | small models, fast |
+| Inverse folding | ProteinMPNN / LigandMPNN / SolubleMPNN | small models, fast |
 | Point-mutant stability | ThermoMPNN (`construct-assembly`) | small; CPU is viable too |
-| MD | OpenMM CUDA platform (`molecular-dynamics`) | use mixed precision |
+| MD | OpenMM CUDA platform (`molecular-dynamics`) | the clearest win on this card |
+
+**Folding is not in that table, and that is the surprise.** An 8 GiB card is
+not what blocks it on native Windows — the Python wheels are. `esmfold2`
+depends on flash-attn and Triton for its fused kernels, and neither publishes a
+`win_amd64` wheel (flash-attn and DeepSpeed are sdist-only; upstream Triton has
+no Windows build, only a community `triton-windows` fork). ColabFold-class
+AlphaFold2 runs on JAX, and `jax-cuda12-plugin` / `jax-cuda13-plugin` ship
+manylinux wheels only, so there is no CUDA JAX on native Windows at all. Boltz
+is torch-based and so does import, but its fast `cuequivariance` kernels are
+Linux shared objects, leaving `--no_kernels` at roughly half speed, and peak
+VRAM is the binding limit at 8 GiB regardless.
+
+So folding stays a Tier 3 hand-off here, for a platform reason rather than a
+memory one. WSL2 recovers the JAX and Triton paths and is the right move if
+local folding matters; it does not recover VRAM, so the 24-80 GiB models stay
+out of reach either way.
 
 Reduced precision is the default worth taking: on Ampere and newer, bfloat16
 halves the weight footprint while keeping fp32's exponent range, so it needs no
@@ -68,12 +83,22 @@ wired in and schema-discoverable; free notebooks when Tamarind does not fit
 | AF2 monomer or complex | ColabFold `AlphaFold2_mmseqs2.ipynb` | ~2000 residues on 16 GiB |
 | Complexes, no setup | `lab.chaidiscovery.com` | web UI |
 | Non-commercial only | `alphafoldserver.com` | 30 jobs/day, 5000 tokens/job |
+| Single-sequence triage | ColabFold `ESMFold.ipynb` | no MSA, lower accuracy |
 | ESMC-6B embeddings | Biohub hosted client | ~12 GiB of weights; local is out |
 | RFdiffusion at scale | Tamarind | runs locally for modest sizes |
 
 Say which of the three Tamarind conditions applies before submitting — cloud
 execution requested, insufficient local VRAM, or batch size. "This job does not
 fit in 8 GiB" is a measurable claim; "no local GPU" is no longer a true one.
+
+**Check the hand-off actually exists before planning around it.** Tier 3 is
+load-bearing for everything above 8 GiB, and it is credential-gated: Tamarind
+needs an API key (Customize > Credentials), and the remote-compute skills need
+a connected provider — a Modal account or an SSH/Slurm target. With neither
+configured, `list_compute` returns nothing and Tier 3 collapses to the free
+notebooks and the structure connector. That is a workable set, but it is not
+the same plan, so verify the credential before promising a routed job rather
+than discovering it at submission time.
 
 ## Constraints that bite
 

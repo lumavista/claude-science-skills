@@ -94,7 +94,15 @@ table below as sizing guidance to be confirmed by an actual run, not a spec.
 | `biohub/ESMC-600M` | 600M | ~1.2 GiB | comfortable |
 | `esm3-sm-open-v1` | 1.4B | ~2.8 GiB | fits in bf16; fp32 (~5.6 GiB) is tight |
 | `biohub/ESMC-6B` | 6B | ~12 GiB | does not fit — use the hosted client |
-| `biohub/ESMFold2` | — | — | activation-dominated; chunk long chains |
+| `biohub/ESMFold2` | — | — | activation-dominated; see the wheel caveat below |
+
+ESMFold2's memory scales with chain length through the activations rather than
+with the weights, so chunk size and chain length are the knobs. On **native
+Windows the blocker is not memory at all**: the fused-kernel path wants
+flash-attn and Triton, and neither publishes a `win_amd64` wheel (flash-attn is
+sdist-only; upstream Triton has no Windows build). Use the hosted
+`esmfold2_client`, or run under WSL2, rather than assuming a local fold will
+work because the card has room.
 
 Two consequences for an 8 GiB card. Load in reduced precision rather than the
 fp32 default, since `autocast_dtype()` returns `bfloat16` on Ampere and newer —
