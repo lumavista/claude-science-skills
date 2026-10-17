@@ -139,22 +139,54 @@ def fold_with_hosted_api(
         raise FoldingEnvironmentError(f"Biohub API error: {result}")
 
     # Convert results to unified format
+    # MolecularComplex has per-residue arrays: plddt (0-1 scale), chain_id, sequence
+    # All sequences are folded as chains in a single complex
     outputs = []
-    for i, seq in enumerate(sequences):
-        chain_result = result.complex.chains[i] if len(result.complex.chains) > i else None
-        if chain_result is None:
-            raise FoldingEnvironmentError(f"No output for sequence {seq['id']}")
 
-        pdb_str = result.complex.to_pdb()  # Full complex PDB
-        plddt = getattr(chain_result, "plddt", None)
+    import tempfile
+
+    # Get per-residue metrics (plddt comes as 0-1, convert to 0-100)
+    plddt_values = result.complex.plddt * 100 if result.complex.plddt is not None else None
+    chain_ids = result.complex.chain_id if hasattr(result.complex, "chain_id") else None
+
+    # Extract per-chain metrics by chain_id
+    for i, seq in enumerate(sequences):
+        target_chain = i  # Chain index in the output
+
+        if chain_ids is not None:
+            # Find residues for this chain
+            chain_mask = chain_ids == target_chain
+            chain_plddt = plddt_values[chain_mask] if plddt_values is not None else None
+        else:
+            # Single sequence or no chain info; use full plddt
+            chain_plddt = plddt_values
+
+        # Verify sequence length matches
+        if chain_plddt is not None:
+            predicted_length = len(chain_plddt)
+            if predicted_length != len(seq["seq"]):
+                raise FoldingEnvironmentError(
+                    f"Sequence {seq['id']}: predicted {predicted_length} residues, "
+                    f"but input was {len(seq['seq'])} residues"
+                )
+
+        # Save structure for this sequence
+        # Note: result.complex.to_pdb() doesn't exist; use to_protein_complex().to_pdb(path)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".pdb", delete=False) as f:
+            pdb_path = f.name
+
+        result.complex.to_protein_complex().to_pdb(pdb_path)
+        with open(pdb_path, "r") as f:
+            pdb_str = f.read()
 
         outputs.append({
             "id": seq["id"],
             "pdb": pdb_str,
-            "plddt": plddt,
-            "plddt_mean": float(plddt.mean()) if plddt is not None else None,
+            "plddt": chain_plddt.tolist() if chain_plddt is not None else None,
+            "plddt_mean": float(chain_plddt.mean()) if chain_plddt is not None else None,
             "device": "biohub",
             "model": model,
+            "length": len(seq["seq"]),
         })
 
     return outputs
