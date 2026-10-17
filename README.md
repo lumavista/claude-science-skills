@@ -106,11 +106,22 @@ failure is an install error rather than an out-of-memory:
 | `triton` | **no** upstream | same (a community `triton-windows` fork exists) |
 
 So `scanpy`'s GPU path never activates on native Windows, and local folding is
-blocked for a platform reason rather than a memory one. WSL2 recovers the
-RAPIDS, JAX and Triton paths; it does not recover VRAM. One further Windows
+blocked for a platform reason rather than a memory one. One further Windows
 specific: RAPIDS managed memory cannot oversubscribe VRAM under Windows or WSL,
 so an oversized run OOMs rather than spilling to host RAM — hence scanpy's
 free-VRAM guard, which diverts a too-large matrix to the CPU instead.
+
+**WSL2 is not a fix when these skills run under Claude Science.** It is the
+usual advice, and it is wrong in this context: the app executes skill code in a
+native Windows sandbox, with ACL-granted `C:\` roots, a private
+desktop and a loopback filtering proxy for egress. WSL is not among the granted
+roots, and shelling into the WSL VM would leave that sandbox's filesystem and
+egress policy behind — which is what the sandbox exists to prevent. So a CUDA
+stack installed inside WSL is reachable from a terminal, but not from a skill
+running in the app. Treat WSL2 as a route for manual work outside Claude
+Science, not as a way to unblock a skill inside it. For in-app work the real
+alternatives are the hosted clients, the free notebooks, the structure
+connector, or a cloud GPU route.
 
 **8 GiB is the binding constraint, and it binds differently per workload.** For
 language models it is the weights: ESMC-300M/600M and `esm3-sm-open-v1` fit in
