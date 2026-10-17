@@ -2,7 +2,7 @@
 name: esm
 description: Uses the Biohub esm Python SDK for ESM3 protein generation, ESMC embeddings, and ESMFold2 all-atom folding. Applies to local model inference and Biohub hosted clients, including former Forge workflows; distinguishes the separate legacy fair-esm distribution.
 license: MIT license
-compatibility: Requires Python 3.12+ and esm 3.4.1.post1. Local pretrained inference runs on a CUDA GPU when one is present and falls back to CPU automatically; CPU is correct but far slower, and the larger checkpoints are impractical on it. Select the device with scripts/_device.py or override with SCI_DEVICE. Hosted inference needs network access and ESM_API_KEY. Use an isolated environment, separate from fair-esm.
+compatibility: Python 3.12+, esm 3.4.1.post1, torch >=2.11,<2.12 — pins too narrow for a shared GPU env. Uses CUDA when present, else CPU, via scripts/_device.py (SCI_DEVICE overrides); hosted inference needs ESM_API_KEY. Isolate from fair-esm.
 metadata:
   version: "2.0"
   skill-author: K-Dense Inc.
@@ -40,39 +40,12 @@ inference machine and budget disk space. Flash Attention is optional; it is
 unnecessary for the tiny CPU tests. Do not install this stack into a shared
 environment containing incompatible Transformers or Torch pins.
 
-The default PyPI `torch` wheel on Windows is CPU-only, so a plain install will
-run on the CPU even on a machine with a working GPU. Install a CUDA build
-explicitly and confirm it before blaming the model for being slow:
-
-```bash
-uv pip install --python .venv-esm/bin/python torch --index-url https://download.pytorch.org/whl/cu132
-python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-```
-
-Match the `cu###` channel to the installed driver; `nvidia-smi` reports the
-maximum CUDA version the driver supports. `torch.cuda.is_available()` printing
-`False` on a machine with a GPU almost always means a CPU-only wheel, not a
-hardware fault.
-
-**A shared CUDA environment will not satisfy this skill.** The pins above are
-narrow: Python >=3.12 and Torch >=2.11,<2.12. A general-purpose GPU environment
-built on Python 3.11 with a current torch (2.14, say) violates both, and
-neither violation is cosmetic — the Python floor blocks installation outright,
-and the torch ceiling is an upper bound the SDK declares against its own
-compiled extensions. Resolve it one of three ways, in order of preference:
-build this skill its own Python 3.12 venv with a CUDA torch in the 2.11.x line;
-use the hosted Biohub client and skip local weights; or re-verify the current
-`esm` release's pins, since a newer release may have widened them. Do not
-install `esm` into a shared environment and assume pip resolved it sensibly —
-check `torch.__version__` and `sys.version` inside the environment that will
-actually run the model.
-
 ## Device selection and VRAM
 
-Use [scripts/_device.py](scripts/_device.py) rather than hardcoding a device.
-It returns `"cuda"` when a GPU is usable, `"mps"` on Apple silicon and `"cpu"`
-otherwise, degrades silently when torch is missing, and honors an explicit
-`SCI_DEVICE=cpu|cuda` override for forcing a route or reproducing a CPU result.
+Use [scripts/_device.py](scripts/_device.py) rather than hardcoding a device: it
+returns `"cuda"` when a GPU is usable, `"mps"` on Apple silicon and `"cpu"`
+otherwise, degrades silently when torch is missing, and honors `SCI_DEVICE` for
+forcing a route or reproducing a CPU result.
 
 ```python
 import sys; sys.path.insert(0, "scripts")
@@ -82,11 +55,26 @@ device = select_device()          # "cuda" on a working GPU, else "cpu"
 print(device_report())            # e.g. cuda (<GPU name>, 8.0 GiB)
 ```
 
-Weight footprint is arithmetic, not a published figure: parameters x bytes per
-parameter, plus roughly a third again for activations, workspace and allocator
-fragmentation. `fits_in_vram()` applies exactly that heuristic. Neither Biohub
-nor EvolutionaryScale publishes per-checkpoint VRAM requirements, so treat the
-table below as sizing guidance to be confirmed by an actual run, not a spec.
+**A shared CUDA environment will not satisfy this skill.** The pins are narrow
+(Python >=3.12, Torch >=2.11,<2.12), so a general-purpose GPU environment on
+Python 3.11 with a current torch violates both: the Python floor blocks
+installation and the torch ceiling is declared against the SDK's compiled
+extensions. Build this skill its own Python 3.12 venv with CUDA torch in the
+2.11.x line (a `cu126`/`cu128` cp312 win_amd64 wheel exists), use the hosted
+client, or re-verify the pins in case a newer release widened them. Check
+`torch.__version__` and `sys.version` in the environment that will run the
+model rather than assuming pip resolved sensibly. Note also that the default
+PyPI torch wheel on Windows is CPU-only, so `torch.cuda.is_available()` being
+`False` is usually the wheel, not the hardware. On Windows with long paths
+disabled (the default), torch's deepest wheel file sits 146 characters below
+the env root, so the venv root must be at most 113 characters — create it at a
+short path such as `C:\venvs\esm`, or enable `LongPathsEnabled`, rather than
+nesting it in a deep workspace, where the install fails partway through.
+
+Footprint below is arithmetic, not a published figure — parameters x bytes per
+parameter plus ~⅓ for activations and fragmentation, which is what
+`fits_in_vram()` applies. Neither Biohub nor EvolutionaryScale publishes
+per-checkpoint VRAM requirements, so confirm by running rather than trusting it.
 
 | Checkpoint | Params | bf16 weights | On an 8 GiB card |
 | --- | --- | --- | --- |
@@ -94,16 +82,16 @@ table below as sizing guidance to be confirmed by an actual run, not a spec.
 | `biohub/ESMC-600M` | 600M | ~1.2 GiB | comfortable |
 | `esm3-sm-open-v1` | 1.4B | ~2.8 GiB | fits in bf16; fp32 (~5.6 GiB) is tight |
 | `biohub/ESMC-6B` | 6B | ~12 GiB | does not fit — use the hosted client |
-| `biohub/ESMFold2` | — | — | activation-dominated; chunk long chains |
+| `biohub/ESMFold2` | — | — | chain length binds, not weights; see below |
 
-Two consequences for an 8 GiB card. Load in reduced precision rather than the
-fp32 default, since `autocast_dtype()` returns `bfloat16` on Ampere and newer —
-it preserves fp32's exponent range, so unlike float16 it needs no loss scaling.
-And for folding, memory scales with sequence length through the activations
-rather than with the weights, so the limit you hit first is chain length, not
-checkpoint size; reduce the chunk size or fold a protomer instead of a trimer.
-Batch size for embeddings is bounded by the longest sequence in the batch, so
-sort by length before batching to avoid padding a short sequence to a long one.
+Three consequences on a small card. Prefer reduced precision, since
+`autocast_dtype()` returns `bfloat16` on Ampere and newer, which keeps fp32's
+exponent range and so needs no loss scaling. For folding, memory scales with
+chain length through the activations, so reduce chunk size or fold a protomer
+rather than a trimer — but on native Windows folding is blocked by wheels
+regardless, as the fused path needs flash-attn and Triton and neither publishes
+a `win_amd64` build, so use `esmfold2_client` or WSL2. For embeddings, batch
+size is bounded by the longest sequence, so sort by length before batching.
 
 | Task | Local model/API | Hosted client/model |
 | --- | --- | --- |
@@ -264,12 +252,10 @@ repository to exercise synthetic local models, pooling, input serialization,
 PDB round trips and mocked hosted contracts. Pretrained ESM3/ESMC/ESMFold2,
 CUDA inference and authenticated services were not executed.
 
-`scripts/_device.py` was exercised only on a host without torch installed,
-which confirms the fallback path — it returns `cpu`, and `vram_gb()`,
-`autocast_dtype()` and `fits_in_vram()` return `None` instead of raising — and
-confirms that `SCI_DEVICE` is honored verbatim. The CUDA branch and the VRAM
-table above are unverified by execution; the first real GPU run should confirm
-both.
+`scripts/_device.py` was exercised only without torch installed, confirming the
+fallback (returns `cpu`; helpers return `None` rather than raising) and the
+`SCI_DEVICE` override; its CUDA branch and the VRAM table are unverified by
+execution.
 
 Follow the selected model's terms and the
 [Biohub acceptable-use policy](https://biohub.org/acceptable-use-policy/).

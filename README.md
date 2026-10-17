@@ -92,13 +92,31 @@ is merely slow, which is the hardest failure to notice. `torch.cuda.is_available
 returning `False` on this machine is almost always the wheel, not the hardware.
 Install from the `download.pytorch.org/whl/cu###` index.
 
-**rapids-singlecell has no native-Windows build.** RAPIDS supports Linux, or
-Windows 11 through WSL2; the 8 GiB consumer GPU (compute capability 8.9) clears the
-hardware bar but native Windows does not clear the OS bar, so scanpy's GPU path
-simply never activates there and the CPU path runs. Worse on this platform,
-RAPIDS managed memory cannot oversubscribe VRAM under Windows or WSL, so an
-oversized run OOMs rather than spilling to host RAM — hence the skill's
+**On native Windows, wheel availability gates more than VRAM does** — the card
+looks adequate and the failure is an install error, not an out-of-memory:
+
+| Package | Windows wheel? | What it gates |
+|---|---|---|
+| `OpenMM-CUDA-12` / `-13` | **yes** | `molecular-dynamics` — works natively |
+| `cupy-cuda12x` | yes | CuPy arrays |
+| `rapids-singlecell` | **no** (sdist only) | `scanpy`'s GPU path |
+| `jax-cuda12/13-plugin` | **no** (manylinux only) | AlphaFold2/ColabFold — no CUDA JAX at all |
+| `flash-attn`, `deepspeed` | **no** (sdist only) | ESMFold2 fused kernels, scGPT, evo2 |
+| `triton` | **no** upstream | same (a community `triton-windows` fork exists) |
+
+So `scanpy`'s GPU path never activates on native Windows, and local folding is
+blocked for a platform reason rather than a memory one. One further Windows
+specific: RAPIDS managed memory cannot oversubscribe VRAM under Windows or WSL,
+so an oversized run OOMs rather than spilling to host RAM — hence scanpy's
 free-VRAM guard, which diverts a too-large matrix to the CPU instead.
+
+**WSL2 is not a fix when these skills run under Claude Science.** The app
+executes skill code in a native Windows sandbox (ACL-granted `C:\`
+roots, private desktop, loopback egress proxy). WSL is not a granted root, and
+shelling into the WSL VM would leave that sandbox behind — which is what it
+exists to prevent. So a CUDA stack in WSL is reachable from a terminal but not
+from an in-app skill: treat WSL2 as a route for manual work, and use the hosted
+clients, free notebooks, structure connector or a cloud GPU route in-app.
 
 **8 GiB is the binding constraint, and it binds differently per workload.** For
 language models it is the weights: ESMC-300M/600M and `esm3-sm-open-v1` fit in
@@ -110,12 +128,11 @@ heuristic, not an allocation guarantee.
 
 ### GPU results are not bitwise identical to CPU results
 
-This matters most in `scanpy`: cuML's UMAP and cuGraph's Leiden are separate
-implementations that a shared seed does not reconcile, and cuVS neighbors is
-exact where scanpy's default is approximate. Cluster IDs can therefore differ
-between backends at the same resolution, so **annotations keyed to cluster IDs
-do not survive a backend switch** — pin `SCI_DEVICE` and record which backend
-produced a result.
+Mainly in `scanpy`: cuML's UMAP and cuGraph's Leiden are separate
+implementations a shared seed does not reconcile, and cuVS neighbors is exact
+where scanpy's default is approximate. Cluster IDs can differ between backends
+at the same resolution, so **annotations keyed to cluster IDs do not survive a
+backend switch** — pin `SCI_DEVICE` and record which backend produced a result.
 
 ### Where a GPU deliberately is not used
 
@@ -155,10 +172,21 @@ The CPU fallback paths were executed and behave correctly: with no GPU
 libraries installed, the selectors return CPU, the helpers return `None`
 instead of raising, `SCI_DEVICE` is honored, and `SCI_DEVICE=cuda` fails loudly
 with an install hint. All 65 Python files compile and all 21 frontmatter blocks
-parse. **The CUDA paths themselves have not been executed** — no GPU library
-was installed at the time of writing — and no benchmark numbers or speedups are
-quoted anywhere in this repo. The VRAM tables are arithmetic, not measurements.
-Confirm on first real GPU run.
+parse.
+
+On the CUDA paths, exactly one is confirmed: **OpenMM's CUDA platform was
+verified on an 8 GiB consumer GPU under Windows (2026-10-17) with `openmm[cuda13]`** —
+but only after putting the pip `nvidia-*` runtime DLL directory on the search
+path. Without that, the plugin fails with error 126, never registers, and
+OpenMM quietly serves OpenCL as though nothing were wrong; importing
+`select_platform` before `openmm` fixes it and surfaces any plugin load
+failure. That is the sharpest lesson here: a GPU path can fail by silently
+downgrading rather than by erroring.
+
+Everything else remains unexecuted — the torch/`esm` CUDA branch, the scanpy
+GPU backend (unavailable on native Windows anyway), and every VRAM table, which
+is arithmetic rather than measurement. No benchmark numbers or speedups are
+quoted anywhere in this repo.
 
 ## Original skills
 
@@ -207,8 +235,9 @@ algorithm is implemented directly.
 `references/tool-licensing.md` records current versions and licences for every
 predictor, folding model and design tool the collection touches, including the
 code-versus-weights splits that a single licence field would misrepresent — and
-corrects NetMHCpan to 4.2e. `references/compute-routes.md` covers what runs on
-CPU locally, what goes to Tamarind, and the free hosted GPU routes.
+corrects NetMHCpan to 4.2e. `references/compute-routes.md` is the collection's
+canonical compute-routing doc: which steps run on the local CPU, which use the
+local GPU, and which exceed it and go to Tamarind or a free hosted route.
 
 ### `vector-integration-analysis`
 
@@ -225,8 +254,10 @@ developability, with trigger keywords reduced and a `## Scope` section added. As
 shipped upstream it competed with the Claude Science featured skills for plain
 structure prediction, docking, and embeddings (AlphaFold2, Boltz, Chai-1,
 ESMFold2, OpenFold3, DiffDock, ESM-2). It now defers to those when they apply
-and submits a cloud job only under a stated condition — explicit request, no
-local GPU, or batch size.
+and submits a cloud job only under a stated condition — explicit request,
+insufficient local VRAM, or batch size. It also records Tamarind's account-free
+key provisioning (a single POST to `/api/agent/provision`), since the missing
+credential is what otherwise makes the whole cloud tier unreachable.
 
 ### `phylogenetics`
 
@@ -271,6 +302,37 @@ Claude Science has no specialist import/export, so `specialists.yaml` is
 documentation, not something the app can load. Re-enter a specialist by hand
 under **Settings > Specialists**. Re-importing this repo clears each
 specialist's skill selections, so re-select them afterward.
+
+## Conventions
+
+The skills were trimmed in 2026-10 to carry what is required and little else:
+SKILL.md bodies went from 318k to 234k characters (−26.6%). Three layers load at
+different times, and the weight that matters is concentrated in the first two:
+
+| Layer | Loads | Budget |
+|---|---|---|
+| `description`, `compatibility` | every session, for skill selection | ≤400 / ≤300 chars |
+| SKILL.md body | when the skill activates | orient and point, do not explain |
+| `references/`, `assets/` | on demand only | detail belongs here |
+
+Four rules keep it that way:
+
+1. **SKILL.md orients; references hold detail.** If a passage restates upstream
+   library documentation, it belongs in a reference or behind a link — that
+   content is also the main maintenance liability, since it goes stale silently.
+2. **Caveats are one sentence.** Correctness, determinism and "what was not
+   tested" notes stay, compressed to the claim without the surrounding
+   reasoning. They are the point of this collection; do not delete them to save
+   space.
+3. **Every reference file is cited by its SKILL.md.** There are currently no
+   orphans, and a new reference nobody links to is dead weight.
+4. **No tutorial prose.** The reader already knows Python and the science.
+
+Two skills deliberately sit above the trend. `molecular-dynamics` is long
+because its four simulation stages are distinct functions sharing one
+simulation object, not the copy-paste they resemble. `scientific-writing`
+stopped at −21% because the remainder is normative safety rules, where cutting
+further means deleting rules rather than compressing them.
 
 ## Usage
 
