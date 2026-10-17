@@ -235,8 +235,9 @@ algorithm is implemented directly.
 `references/tool-licensing.md` records current versions and licences for every
 predictor, folding model and design tool the collection touches, including the
 code-versus-weights splits that a single licence field would misrepresent — and
-corrects NetMHCpan to 4.2e. `references/compute-routes.md` covers what runs on
-CPU locally, what goes to Tamarind, and the free hosted GPU routes.
+corrects NetMHCpan to 4.2e. `references/compute-routes.md` is the collection's
+canonical compute-routing doc: which steps run on the local CPU, which use the
+local GPU, and which exceed it and go to Tamarind or a free hosted route.
 
 ### `vector-integration-analysis`
 
@@ -253,8 +254,10 @@ developability, with trigger keywords reduced and a `## Scope` section added. As
 shipped upstream it competed with the Claude Science featured skills for plain
 structure prediction, docking, and embeddings (AlphaFold2, Boltz, Chai-1,
 ESMFold2, OpenFold3, DiffDock, ESM-2). It now defers to those when they apply
-and submits a cloud job only under a stated condition — explicit request, no
-local GPU, or batch size.
+and submits a cloud job only under a stated condition — explicit request,
+insufficient local VRAM, or batch size. It also records Tamarind's account-free
+key provisioning (a single POST to `/api/agent/provision`), since the missing
+credential is what otherwise makes the whole cloud tier unreachable.
 
 ### `phylogenetics`
 
@@ -299,6 +302,37 @@ Claude Science has no specialist import/export, so `specialists.yaml` is
 documentation, not something the app can load. Re-enter a specialist by hand
 under **Settings > Specialists**. Re-importing this repo clears each
 specialist's skill selections, so re-select them afterward.
+
+## Conventions
+
+The skills were trimmed in 2026-10 to carry what is required and little else:
+SKILL.md bodies went from 318k to 234k characters (−26.6%). Three layers load at
+different times, and the weight that matters is concentrated in the first two:
+
+| Layer | Loads | Budget |
+|---|---|---|
+| `description`, `compatibility` | every session, for skill selection | ≤400 / ≤300 chars |
+| SKILL.md body | when the skill activates | orient and point, do not explain |
+| `references/`, `assets/` | on demand only | detail belongs here |
+
+Four rules keep it that way:
+
+1. **SKILL.md orients; references hold detail.** If a passage restates upstream
+   library documentation, it belongs in a reference or behind a link — that
+   content is also the main maintenance liability, since it goes stale silently.
+2. **Caveats are one sentence.** Correctness, determinism and "what was not
+   tested" notes stay, compressed to the claim without the surrounding
+   reasoning. They are the point of this collection; do not delete them to save
+   space.
+3. **Every reference file is cited by its SKILL.md.** There are currently no
+   orphans, and a new reference nobody links to is dead weight.
+4. **No tutorial prose.** The reader already knows Python and the science.
+
+Two skills deliberately sit above the trend. `molecular-dynamics` is long
+because its four simulation stages are distinct functions sharing one
+simulation object, not the copy-paste they resemble. `scientific-writing`
+stopped at −21% because the remainder is normative safety rules, where cutting
+further means deleting rules rather than compressing them.
 
 ## Usage
 
