@@ -107,6 +107,12 @@ notebooks and the structure connector. That is a workable set, but it is not
 the same plan, so verify the credential before promising a routed job rather
 than discovering it at submission time.
 
+The cheapest way to close that gap is the Tamarind key, and it does not require
+an account: Tamarind documents a free trial key provisioned by a single POST to
+`/api/agent/provision` (see the `tamarind` skill's Access section). Ask the user
+first — it creates a credential — and treat the ten-job trial as enough to
+validate a route, not to run a campaign.
+
 ## Constraints that bite
 
 **A CPU-only torch wheel.** The default PyPI `torch` on Windows has no CUDA.
