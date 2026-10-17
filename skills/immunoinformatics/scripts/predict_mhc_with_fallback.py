@@ -175,6 +175,7 @@ def predict_with_mhcflurry(
                 "  3. Re-run with MHCFLURRY_MODELS_DIR set"
             ) from e
 
+    import mhcflurry
     supported = set(predictor.supported_alleles)
     usable = [a for a in alleles if a in supported]
 
@@ -183,7 +184,7 @@ def predict_with_mhcflurry(
 
     if not usable:
         raise MHCPredictionError(
-            f"No requested alleles supported by MHCflurry {predictor.metadata()['model_version']}\n"
+            f"No requested alleles supported by MHCflurry {mhcflurry.__version__}\n"
             f"Requested: {alleles}\n"
             f"Supported: {sorted(supported)[:10]}... (showing first 10)"
         )
@@ -213,7 +214,7 @@ def predict_with_mhcflurry(
             "percentile_rank": pres_percentile if include_percentile else percentile,
             "presentation_score": pres_score,
             "backend": "mhcflurry",
-            "backend_version": predictor.metadata()["model_version"],
+            "backend_version": mhcflurry.__version__,
         })
 
     return results
