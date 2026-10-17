@@ -2,7 +2,7 @@
 name: tamarind
 description: Runs de novo protein design, binder design, and antibody/nanobody design and developability on the Tamarind Bio platform via its REST API or MCP server, using RFdiffusion, BoltzGen, ProteinMPNN inverse folding, and developability panels — no local GPUs required. Use for design and optimization tasks that no local skill covers, for batch submission of many sequences, or whenever the user names Tamarind, tamarind.bio, app.tamarind.bio/api, or the x-api-key header. Do NOT use for plain structure prediction, docking, or embeddings when a dedicated local skill exists — prefer AlphaFold2, Boltz, Chai-1, ESMFold2, OpenFold3, ProteinMPNN, LigandMPNN, SolubleMPNN, DiffDock, or ESM-2 directly. Reach for Tamarind for those models only when the user asks for cloud execution, when the job exceeds the local GPU's memory, or when the batch is larger than local compute allows.
 license: MIT
-compatibility: Requires Python 3.10+, a Tamarind Bio account, and an API key from app.tamarind.bio. Uses the `requests` library against the public REST API (these recipes use HTTP directly). Network access required. Optional MCP server at mcp.tamarind.bio/mcp for agent hosts.
+compatibility: Requires Python 3.10+ and an API key sent as x-api-key. A Tamarind Bio account is the usual source of that key (app.tamarind.bio, Account / API settings, ten free jobs), but agents without a signup can provision a free trial key instead — see Access. Uses the `requests` library against the public REST API (these recipes use HTTP directly). Network access required. Optional MCP server at mcp.tamarind.bio/mcp for agent hosts.
 metadata:
   version: "1.3"
   last-reviewed: "2026-09-30"
@@ -78,9 +78,28 @@ unresolved difference rather than guessing.
    host and account data. Every relative REST path below is under `/api`.
 2. Obtain a key from the deployment's API settings and read it from
    `TAMARIND_API_KEY`; send it as `x-api-key`. Keep keys out of files and logs.
+   Signing in at `app.tamarind.bio` and generating a key under Account / API
+   settings is the normal route, and each user gets ten free jobs.
 3. Check the account's current allowance and compute budget before scaling up.
    Free usage is a monthly allowance, not an unconditional promise of ten jobs
    forever; billing and entitlements can change.
+
+**Agent provisioning without an account.** Tamarind documents a second route
+for agents with no signup: a single `POST` to
+`https://app.tamarind.bio/api/agent/provision` returns a free trial key. That
+is useful precisely because it removes the credential gap that otherwise makes
+this skill unreachable, and it is the fastest way to test whether a routed job
+works at all.
+
+Treat it as a decision for the user, not a step to take unprompted. It creates
+an account-like credential and consumes a free trial tied to this machine, so
+ask before calling it, then store the result in `TAMARIND_API_KEY` rather than
+writing it into a file. It is also a trial: ten jobs is enough to validate a
+route, not to run a design campaign, so do not plan a batch around it without
+saying that the allowance is the binding limit. This endpoint is recorded from
+Tamarind's own instructions and has not been exercised from this repo — treat a
+non-2xx response as "the documented route changed", not as a bug in your
+request.
 
 ```bash
 # Public discovery requires no credential.
