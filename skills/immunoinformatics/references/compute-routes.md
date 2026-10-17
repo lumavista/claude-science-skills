@@ -61,9 +61,15 @@ Linux shared objects, leaving `--no_kernels` at roughly half speed, and peak
 VRAM is the binding limit at 8 GiB regardless.
 
 So folding stays a Tier 3 hand-off here, for a platform reason rather than a
-memory one. WSL2 recovers the JAX and Triton paths and is the right move if
-local folding matters; it does not recover VRAM, so the 24-80 GiB models stay
-out of reach either way.
+memory one.
+
+WSL2 is the usual answer to a missing Linux wheel, and it does recover the JAX
+and Triton paths for manual work — but **not for a skill running under Claude
+Science**, which executes code in a native Windows AppContainer sandbox with
+ACL-granted `C:\` roots and a loopback egress proxy. WSL is not a granted root,
+and shelling into the WSL VM would leave that sandbox behind. So WSL2 is a
+route for your own terminal, not a way to unblock an in-app skill. It does not
+recover VRAM either way, so the 24-80 GiB models stay out of reach regardless.
 
 Reduced precision is the default worth taking: on Ampere and newer, bfloat16
 halves the weight footprint while keeping fp32's exponent range, so it needs no
