@@ -92,9 +92,8 @@ is merely slow, which is the hardest failure to notice. `torch.cuda.is_available
 returning `False` on this machine is almost always the wheel, not the hardware.
 Install from the `download.pytorch.org/whl/cu###` index.
 
-**On native Windows, wheel availability gates more than VRAM does.** This is the
-constraint that surprises people, because the card looks adequate and the
-failure is an install error rather than an out-of-memory:
+**On native Windows, wheel availability gates more than VRAM does** — the card
+looks adequate and the failure is an install error, not an out-of-memory:
 
 | Package | Windows wheel? | What it gates |
 |---|---|---|
@@ -111,17 +110,13 @@ specific: RAPIDS managed memory cannot oversubscribe VRAM under Windows or WSL,
 so an oversized run OOMs rather than spilling to host RAM — hence scanpy's
 free-VRAM guard, which diverts a too-large matrix to the CPU instead.
 
-**WSL2 is not a fix when these skills run under Claude Science.** It is the
-usual advice, and it is wrong in this context: the app executes skill code in a
-native Windows sandbox, with ACL-granted `C:\` roots, a private
-desktop and a loopback filtering proxy for egress. WSL is not among the granted
-roots, and shelling into the WSL VM would leave that sandbox's filesystem and
-egress policy behind — which is what the sandbox exists to prevent. So a CUDA
-stack installed inside WSL is reachable from a terminal, but not from a skill
-running in the app. Treat WSL2 as a route for manual work outside Claude
-Science, not as a way to unblock a skill inside it. For in-app work the real
-alternatives are the hosted clients, the free notebooks, the structure
-connector, or a cloud GPU route.
+**WSL2 is not a fix when these skills run under Claude Science.** The app
+executes skill code in a native Windows sandbox (ACL-granted `C:\`
+roots, private desktop, loopback egress proxy). WSL is not a granted root, and
+shelling into the WSL VM would leave that sandbox behind — which is what it
+exists to prevent. So a CUDA stack in WSL is reachable from a terminal but not
+from an in-app skill: treat WSL2 as a route for manual work, and use the hosted
+clients, free notebooks, structure connector or a cloud GPU route in-app.
 
 **8 GiB is the binding constraint, and it binds differently per workload.** For
 language models it is the weights: ESMC-300M/600M and `esm3-sm-open-v1` fit in
@@ -133,12 +128,11 @@ heuristic, not an allocation guarantee.
 
 ### GPU results are not bitwise identical to CPU results
 
-This matters most in `scanpy`: cuML's UMAP and cuGraph's Leiden are separate
-implementations that a shared seed does not reconcile, and cuVS neighbors is
-exact where scanpy's default is approximate. Cluster IDs can therefore differ
-between backends at the same resolution, so **annotations keyed to cluster IDs
-do not survive a backend switch** — pin `SCI_DEVICE` and record which backend
-produced a result.
+Mainly in `scanpy`: cuML's UMAP and cuGraph's Leiden are separate
+implementations a shared seed does not reconcile, and cuVS neighbors is exact
+where scanpy's default is approximate. Cluster IDs can differ between backends
+at the same resolution, so **annotations keyed to cluster IDs do not survive a
+backend switch** — pin `SCI_DEVICE` and record which backend produced a result.
 
 ### Where a GPU deliberately is not used
 
@@ -178,10 +172,21 @@ The CPU fallback paths were executed and behave correctly: with no GPU
 libraries installed, the selectors return CPU, the helpers return `None`
 instead of raising, `SCI_DEVICE` is honored, and `SCI_DEVICE=cuda` fails loudly
 with an install hint. All 65 Python files compile and all 21 frontmatter blocks
-parse. **The CUDA paths themselves have not been executed** — no GPU library
-was installed at the time of writing — and no benchmark numbers or speedups are
-quoted anywhere in this repo. The VRAM tables are arithmetic, not measurements.
-Confirm on first real GPU run.
+parse.
+
+On the CUDA paths, exactly one is confirmed: **OpenMM's CUDA platform was
+verified on an 8 GiB consumer GPU under Windows (2026-10-17) with `openmm[cuda13]`** —
+but only after putting the pip `nvidia-*` runtime DLL directory on the search
+path. Without that, the plugin fails with error 126, never registers, and
+OpenMM quietly serves OpenCL as though nothing were wrong; importing
+`select_platform` before `openmm` fixes it and surfaces any plugin load
+failure. That is the sharpest lesson here: a GPU path can fail by silently
+downgrading rather than by erroring.
+
+Everything else remains unexecuted — the torch/`esm` CUDA branch, the scanpy
+GPU backend (unavailable on native Windows anyway), and every VRAM table, which
+is arithmetic rather than measurement. No benchmark numbers or speedups are
+quoted anywhere in this repo.
 
 ## Original skills
 

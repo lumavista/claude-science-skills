@@ -2,7 +2,7 @@
 name: phylogenetics
 description: Builds and analyzes phylogenetic trees using MAFFT or pyfamsa multiple sequence alignment, IQ-TREE maximum likelihood with ModelFinder and branch support, and FastTree approximate inference. Uses ETE3 for tree summaries and visualization. Applies to homologous nucleotide or protein sequences, microbial gene trees, protein families, and cautiously interpreted dated phylogenies.
 license: Unknown
-compatibility: Requires MAFFT and IQ-TREE 3 or FastTree executables on Linux/macOS. On Windows, MAFFT, IQ-TREE and trimAl are unavailable in practice (no bioconda win-64 builds; vendor binaries fail to load under forced ASLR) — use pyfamsa for alignment and FastTree for inference. Optional tree summaries use Python 3.12 and ete3 3.1.3; rendering also needs PyQt5. Network access is required for installation, not local inference.
+compatibility: Requires MAFFT and IQ-TREE 3 or FastTree executables on Linux/macOS. On Windows MAFFT, IQ-TREE and trimAl are unavailable in practice — use pyfamsa and FastTree. Optional tree summaries need Python 3.12 and ete3 3.1.3; rendering also needs PyQt5. Network only for installation.
 metadata:
   version: "1.6"
   skill-author: Kuan-lin Huang, modified by Lumavista.BIO
@@ -13,65 +13,52 @@ metadata:
 
 ## When to use
 
-Use this workflow for an alignment of homologous loci or proteins, a gene tree,
-branch support, and an interpretable tree figure. Multi-locus partitioning,
-concordance factors, ancestral states and dating are covered in
+For an alignment of homologous loci or proteins, a gene tree, branch support,
+and an interpretable tree figure. Multi-locus partitioning, concordance factors,
+ancestral states and dating are in
 [IQ-TREE reference](references/iqtree_inference.md).
 
-A gene tree does not establish a species tree, transmission direction, or horizontal
-transfer by itself. Sampling dates alone do not justify a molecular clock.
+A gene tree does not by itself establish a species tree, transmission direction
+or horizontal transfer, and sampling dates alone do not justify a molecular
+clock.
 
 ## Versions and installation
 
-Reviewed against current official documentation on 2026-10-01. The executed
-smoke workflow used MAFFT **7.526**, IQ-TREE **3.1.4**, FastTree **2.2.0** and
-ETE3 **3.1.3** on Python 3.12. ETE3 remains deliberate for this helper; ETE4 is a
-separate API and is not a drop-in replacement. ETE3 imports `cgi`, removed in
-Python 3.13. The native executables are not Python packages.
+Reviewed against official documentation on 2026-10-01. The smoke workflow used
+MAFFT **7.526**, IQ-TREE **3.1.4**, FastTree **2.2.0** and ETE3 **3.1.3** on
+Python 3.12. ETE3 is deliberate — ETE4 is a separate API, not a drop-in
+replacement — and ETE3 imports `cgi`, removed in Python 3.13.
 
-Inference is CPU-bound: neither FastTree nor IQ-TREE has a CUDA path, so threads
-are the only parallelism available. BEAGLE's CUDA kernels do exist, but they serve
-Bayesian MCMC in BEAST or MrBayes — a different inference method than this skill
-performs, so using them would mean replacing the method rather than accelerating it.
-
-Illustrative installation commands; verify executable versions after installation:
+Inference is CPU-bound: threads are the only parallelism, since neither FastTree
+nor IQ-TREE has a CUDA path and BEAGLE's CUDA kernels serve Bayesian MCMC in
+BEAST/MrBayes, a different method rather than an accelerator for this one.
 
 ```bash
 conda create -n phylo -c conda-forge -c bioconda mafft iqtree fasttree trimal
-conda activate phylo
-uv venv --python 3.12 .venv-phylo
-uv pip install --python .venv-phylo/bin/python ete3==3.1.3 numpy six
-# Optional rendering backend; it can require a working Qt platform plugin.
-uv pip install --python .venv-phylo/bin/python PyQt5
+uv pip install ete3==3.1.3 numpy six PyQt5   # PyQt5 only for rendering
 ```
 
 **Verify that each executable launches, not merely that the environment built.**
-A solver that cannot satisfy a spec may report the environment as partially
-available and drop it silently; the failure then surfaces much later as a
-missing-command error attributed to the wrong cause. Print the version of every
-executable before using it.
+A solver that cannot satisfy a spec may silently drop it and report the
+environment as partially available, surfacing much later as a missing-command
+error attributed to the wrong cause. Print every version before using it.
+
+The helper defaults to `iqtree3` and `FastTree`; use `--iqtree-bin iqtree2` or
+`--fasttree-bin fasttree` for differently named installs (version 2
+compatibility is source-checked, not runtime-tested). All analyses are local.
 
 ### Platform availability
 
-The line above is a Linux/macOS command. bioconda publishes no win-64 builds of
-MAFFT, IQ-TREE, FastTree or trimAl, so on Windows all four specs are dropped.
-Vendor-supplied Windows binaries are not a general substitute either: MAFFT,
-MUSCLE, IQ-TREE and trimAl ship non-relocatable PE images
-(`DllCharacteristics 0x8120`, no `.reloc` section) and fail to load with
-`WinError 623` wherever forced ASLR is in effect, which includes sandboxed
-execution environments. Such binaries carry no relocation data and cannot be
-repaired with `editbin /DYNAMICBASE`. Before investing in any Windows binary,
-read its PE header and confirm `DYNAMICBASE` and a base-relocation directory;
-FastTree 2.2.0 passes this check, which is why it runs where the others do not.
-
-Compiled **Python extension modules are built with ASLR enabled by default**, so
-a pip wheel loads where a standalone executable does not. On Windows, prefer a
-wheel-based aligner:
-
-```bash
-# Alignment and pairwise work, all with win_amd64 wheels.
-pip install pyfamsa pyhmmer parasail biopython
-```
+bioconda publishes no win-64 builds of MAFFT, IQ-TREE, FastTree or trimAl, so on
+Windows all four specs are dropped, and vendor Windows binaries are not a
+substitute: MAFFT, MUSCLE, IQ-TREE and trimAl ship non-relocatable PE images (no
+`.reloc` section) that fail with `WinError 623` under forced ASLR, including
+sandboxed environments, and cannot be repaired with `editbin /DYNAMICBASE`.
+Check a candidate binary's PE header for `DYNAMICBASE` plus a base-relocation
+directory — FastTree 2.2.0 passes, which is why it runs where the others do not.
+Python extension modules are built with ASLR enabled, so
+`pip install pyfamsa pyhmmer parasail biopython` (all win_amd64 wheels) loads
+where a standalone executable does not.
 
 | Role | Linux/macOS | Windows |
 |---|---|---|
@@ -81,59 +68,42 @@ pip install pyfamsa pyhmmer parasail biopython
 | Pairwise | — | `parasail`, Biopython `PairwiseAligner` |
 | Trimming | trimAl | no wheel; filter columns in Biopython |
 
-On Windows the venv interpreter is `.venv-phylo\Scripts\python.exe`, not
-`.venv-phylo/bin/python`. If a conda `activate.d` directory is read-only,
-invoke executables by absolute path rather than attempting to install a PATH
-hook.
+If a conda `activate.d` directory is read-only, invoke executables by absolute
+path.
 
-Losing IQ-TREE on Windows costs ModelFinder, ultrafast bootstrap and SH-aLRT;
-FastTree's approximate search and SH-like local supports are the ceiling there.
-State that limitation in any write-up rather than letting the reader assume a
-full ML analysis.
-
-The helper defaults to `iqtree3` and `FastTree`; use `--iqtree-bin iqtree2` for an
-existing IQ-TREE 2 installation, or `--fasttree-bin fasttree` if that is the
-installed name. Version 2 compatibility is source-checked, not runtime-tested
-in this refresh. All analyses are local; this skill invokes no HTTP API or remote
-inference endpoint.
+**Losing IQ-TREE on Windows costs ModelFinder, ultrafast bootstrap and
+SH-aLRT**, leaving FastTree's approximate search and SH-like local supports as
+the ceiling. State that limitation in any write-up rather than letting the
+reader assume a full ML analysis.
 
 ## Workflow
 
 ### 1. Establish the biological input
 
-- Select homologs with appropriate taxon coverage; investigate paralogs,
-  contamination and recombination before assuming one history describes all sites.
-- Use unique, whitespace-free FASTA IDs and keep a separate sample metadata table.
-  The helper rejects empty/all-missing records and Newick punctuation in IDs.
-- Specify `--type nt` or `--type aa`. The helper sends `-st DNA` or `-st AA` to
-  IQ-TREE and selects nucleotide/protein FastTree flags explicitly.
-- Coding DNA needs codon-aware alignment if using a codon model. Ordinary MAFFT
-  nucleotide alignment does not preserve reading frames automatically.
+- Select homologs with appropriate taxon coverage, and investigate paralogs,
+  contamination and recombination before assuming one history describes all
+  sites.
+- Use unique, whitespace-free FASTA IDs with a separate metadata table; the
+  helper rejects empty/all-missing records and Newick punctuation in IDs.
+- Specify `--type nt` or `--type aa`.
+- Coding DNA needs codon-aware alignment if using a codon model — ordinary MAFFT
+  nucleotide alignment does not preserve reading frames.
 - Keep the original sequences, accession versions, filters, alignment and exact
-  commands. Inspect alignment lengths, gaps, composition and taxon identities.
+  commands; inspect alignment length, gaps, composition and taxon identity.
 
 ### 2. Align and inspect
 
-These MAFFT commands were exercised on small synthetic FASTA data:
-
 ```bash
 mafft --auto --thread 1 --inputorder sequences.fasta > aligned.fasta
-# L-INS-i: locally alignable homologs, typically small datasets.
-mafft --localpair --maxiterate 1000 --thread 1 --inputorder sequences.fasta > linsi.fasta
-# E-INS-i: homologs with large internal gaps.
-mafft --genafpair --maxiterate 1000 --thread 1 --inputorder sequences.fasta > einsi.fasta
-# FFT-NS-i (two refinement cycles), then FFT-NS-2 (progressive).
-mafft --retree 2 --maxiterate 2 --thread 1 --inputorder sequences.fasta > fftnsi.fasta
-mafft --retree 2 --maxiterate 0 --thread 1 --inputorder sequences.fasta > fftns.fasta
 ```
 
-`auto` delegates the choice to MAFFT. Sequence count alone is not an accuracy
-criterion. Single-thread runs simplify reproducibility; MAFFT iterative refinement
-with multiple threads can produce different results between runs.
+`--auto` delegates the strategy choice to MAFFT, and sequence count alone is not
+an accuracy criterion; choose L-INS-i, E-INS-i or an FFT-NS variant deliberately
+per the MAFFT manual. Single-thread runs simplify reproducibility, since
+iterative refinement with multiple threads can differ between runs.
 
-Where MAFFT is unavailable, align with `pyfamsa`. FAMSA is a progressive
-aligner designed for large families; it handles indels normally and returns
-objects in process, with no subprocess or file round-trip:
+Where MAFFT is unavailable, align with `pyfamsa` (FAMSA, progressive, designed
+for large families, in-process with no file round-trip):
 
 ```python
 from Bio import SeqIO
@@ -141,129 +111,101 @@ from pyfamsa import Aligner, Sequence
 
 seqs = [Sequence(rec.id.encode(), str(rec.seq).encode())
         for rec in SeqIO.parse("sequences.fasta", "fasta")]
-aligner = Aligner(guide_tree="upgma", threads=1)
-msa = aligner.align(seqs)
+msa = Aligner(guide_tree="upgma", threads=1).align(seqs)
 # Write FASTA for FastTree, then confirm the count matches the input.
 ```
 
-Set `threads=1` for reproducibility, for the same reason as MAFFT. Name FAMSA
-and its version in the methods — a wheel-based aligner is still an aligner
-choice that changes the alignment, and "aligned in Python" is not a method.
+Name FAMSA and its version in the methods — a wheel-based aligner is still an
+aligner choice that changes the alignment, and "aligned in Python" is not a
+method.
 
-**Reference-anchored alternatives are not multiple sequence alignments.**
-Projecting each sequence onto one reference's coordinates by pairwise alignment
-is acceptable only for sequences verified to be indel-free and length-uniform,
-where column correspondence is unambiguous and the result is exact. The moment
-indels are present, gaps placed independently per sequence are inconsistent
-between sequences, and the matrix must not be described as an MSA. Verify
-indel-freedom and report the evidence before relying on this shortcut; prefer a
-real aligner whenever one is available.
+**Reference-anchored projection is not a multiple sequence alignment**, and is
+acceptable only for sequences verified indel-free and length-uniform; once
+indels are present, independently placed gaps are mutually inconsistent. Report
+the indel-freedom evidence, and prefer a real aligner.
 
-Trimming is optional and must be justified by alignment quality, not assumed to
-improve every tree. No `pytrimal` wheel exists for win-64; where trimAl is
-unavailable, filter columns by gap fraction and occupancy directly in Biopython
-and record the rule applied. The following trimAl command is
-documentation-checked and illustrative; trimAl was not installed for this
-review:
+Trimming is optional and must be justified by alignment quality; the trimAl
+command below is documentation-checked, not executed in this review, and with no
+`pytrimal` win-64 wheel you filter columns by gap fraction and occupancy in
+Biopython instead, recording the rule.
 
 ```bash
 trimal -in aligned.fasta -out trimmed.fasta -automated1 -fasta
 ```
 
-Record retained columns/taxa and compare sensitivity to trimming. A failed trim
-must stop the trimming step; do not silently copy the untrimmed input under a
-“trimmed” filename. The bundled helper does not trim automatically.
+Record retained columns/taxa and compare sensitivity to trimming. **A failed
+trim must stop the trimming step** — never copy the untrimmed input under a
+"trimmed" filename. The helper does not trim.
 
 ### 3. Infer a tree
 
-Use the maintained helper instead of recreating subprocess wrappers. From the
-skill directory, with the executable names on `PATH`:
+Use the maintained helper rather than recreating subprocess wrappers, from the
+skill directory with the executables on `PATH`:
 
 ```bash
 python scripts/phylogenetic_analysis.py sequences.fasta --type nt --threads 1 \
   --bootstrap 1000 --seed 42 --output-dir results --no-visualization
-# Use a reviewed alignment (including any explicit trimming) without realigning.
-python scripts/phylogenetic_analysis.py aligned.fasta --aligned --type nt \
-  --threads 1 --output-dir reviewed --no-visualization
-# Protein FastTree alternative; --threads applies to MAFFT/IQ-TREE, not FastTree.
-python scripts/phylogenetic_analysis.py proteins.fasta --type aa --fasttree \
-  --threads 1 --output-dir fast_protein --no-visualization
+# --aligned skips realignment; --fasttree selects FastTree (which ignores
+# --threads). Without MAFFT and IQ-TREE, --aligned --fasttree is the only path.
+python scripts/phylogenetic_analysis.py aligned.fasta --aligned --type aa \
+  --fasttree --output-dir reviewed --no-visualization
 ```
 
-Where IQ-TREE is unavailable, align separately (MAFFT or `pyfamsa`) and run the
-helper on the reviewed alignment with `--aligned --fasttree`, which is the only
-path the helper can take without the MAFFT and IQ-TREE executables.
+**Account for every input sequence through alignment and inference**, and report
+any dropped: a silently shortened alignment produces a clean-looking tree of the
+wrong taxon set, and the count is the cheapest place to catch it.
 
-Account for every input sequence through alignment and inference, and report any
-that were dropped. A silently shortened alignment produces a clean-looking tree
-of the wrong taxon set, and the count is the cheapest place to catch it.
+IQ-TREE defaults are `-m MFP`, `-B 1000`, `--alrt 1000`; use `--model` only for
+a justified fixed model, and a new output prefix when data or model assumptions
+change. FastTree uses `-nt -gtr -gamma` for DNA and `-lg -gamma` for proteins,
+searches with the CAT approximation before Gamma20 rescaling (so it is **not** a
+full Gamma-model ML search), and reports **SH-like local support in the 0–1
+range**, not UFBoot percentages. Choose by workload benchmarking, not a taxon
+threshold. Flags, output files and checkpoint resumption:
+[IQ-TREE reference](references/iqtree_inference.md).
 
-The standard IQ-TREE command uses `-m MFP` (ModelFinder including FreeRate
-models), `-B 1000` (UFBoot) and `--alrt 1000`. `-m TEST` remains supported but
-searches a narrower model set. Use `--model` for a scientifically justified fixed
-model. IQ-TREE checkpoints are preserved; `--redo` explicitly restarts and
-replaces results. Use a new output prefix when data or model assumptions change.
+### 4. Interpret support and rooting
 
-FastTree uses `-nt -gtr -gamma` for DNA and `-lg -gamma` for proteins. Its search
-uses the CAT approximation before Gamma20 rescaling; it is not a full Gamma-model
-ML search. JTT is FastTree's protein default (no `-jtt` flag); nucleotide JC is
-selected by `-nt` without `-gtr`. FastTree defaults to **SH-like local support**
-in the **0–1** range, not UFBoot percentages. Use workload-based benchmarking,
-not a universal taxon threshold, to decide between inference tools.
+Read `.iqtree` and `.log`, not only the image, and verify the order of IQ-TREE's
+slash-delimited SH-aLRT/UFBoot labels in the report. UFBoot ≥95 and SH-aLRT ≥80
+are screening thresholds, not proof of correctness or posterior probabilities,
+and the standard-bootstrap 70% rule does not apply to UFBoot. Model
+misspecification, alignment error and sampling can all produce strongly
+supported wrong branches; consider `-bnni` when assessing model violations and
+UFBoot overestimation.
 
-### 4. Interpret support, rooting and outputs
-
-Read `.iqtree` and `.log`, not only the image. In the default combined test,
-IQ-TREE writes slash-delimited SH-aLRT/UFBoot labels; verify their order in the
-report. UFBoot >=95 and SH-aLRT >=80 are common screening thresholds, not proof
-of correctness or posterior probabilities. Do not apply a standard-bootstrap
-70% rule to UFBoot. Model misspecification, alignment error and sampling can
-produce strongly supported wrong branches; consider `-bnni` when assessing
-model violations and UFBoot overestimation.
-
-Reversible substitution models do not infer the evolutionary root. The helper
-preserves the supplied tree orientation unless an explicit `--outgroup` or
-`--midpoint` display choice is made. Select outgroups biologically; midpoint
-rooting assumes sufficiently clock-like path lengths and is only a heuristic.
-`--outgroup` passes one taxon to IQ-TREE and verifies that it exists. Display
-rerooting preserves support labels on their splits. Neither display option
-creates a dated phylogeny or overwrites the original inferred tree.
-
-Primary outputs are `<prefix>.treefile` (IQ-TREE) or `<prefix>.tree` (FastTree),
-the alignment, and IQ-TREE's `.iqtree`, `.log`, `.ckp.gz`, plus optional support
-files. `.model.gz` caches model-selection work; it is not an estimated model
-parameter report. Keep these artifacts together.
+**Reversible substitution models do not infer the evolutionary root.** The
+helper preserves the supplied orientation unless `--outgroup` (one taxon,
+existence verified) or `--midpoint` is given; midpoint rooting assumes clock-like
+path lengths and is only a heuristic, and display rerooting preserves support
+labels on their splits without creating a dated phylogeny or overwriting the
+inferred tree. Keep the tree file, alignment and IQ-TREE artifacts together.
 
 ### 5. Summarize and visualize
 
-ETE must read combined IQ-TREE labels as internal **names** with `format=1`;
+ETE must read combined IQ-TREE labels as internal **names** with `format=1` —
 its default numeric-support parser cannot parse `95.2/99`. The helper renders
-the original text labels, not ETE's default support value. Branch statistics
-use all original non-root edges, including zero-length edges, without rerooting.
+the original text labels, and branch statistics use all original non-root edges,
+including zero-length ones, without rerooting.
 
 ```python
 # Run from the skill directory in the ETE3 environment.
-import sys
-sys.path.insert(0, "scripts")
+import sys; sys.path.insert(0, "scripts")
 from phylogenetic_analysis import load_tree, tree_summary
-
-tree = load_tree("results/sequences.treefile")
-print(tree.get_leaf_names())
 print(tree_summary("results/sequences.treefile"))
 ```
 
-To request rendering, omit `--no-visualization`. ETE3 needs PyQt5; on a headless
-host the appropriate Qt platform plugin must be available. Missing rendering
-support leaves the inferred tree intact and is reported explicitly. Qt rendering
-was not exercised in this review. FigTree or iTOL can also display Newick; verify
-that a viewer retains the support labels and branch-length scale.
+Omit `--no-visualization` to render. ETE3 needs PyQt5 and, headless, a Qt
+platform plugin; missing rendering support leaves the inferred tree intact and
+is reported explicitly, and Qt rendering was not exercised in this review.
+FigTree and iTOL also display Newick — verify the viewer retains support labels
+and the branch-length scale.
 
 ## Official references
 
-- [MAFFT manual](https://mafft.cbrc.jp/alignment/software/manual/manual.html) and [threading](https://mafft.cbrc.jp/alignment/software/multithreading.html)
-- [IQ-TREE quickstart](https://iqtree.github.io/doc/Quickstart), [current releases](https://github.com/iqtree/iqtree3/releases), [model assumptions](https://iqtree.github.io/doc/Assessing-Phylogenetic-Assumptions)
+- [MAFFT manual](https://mafft.cbrc.jp/alignment/software/manual/manual.html), [threading](https://mafft.cbrc.jp/alignment/software/multithreading.html)
+- [IQ-TREE quickstart](https://iqtree.github.io/doc/Quickstart), [releases](https://github.com/iqtree/iqtree3/releases), [model assumptions](https://iqtree.github.io/doc/Assessing-Phylogenetic-Assumptions)
 - [FastTree manual](https://morgannprice.github.io/fasttree/)
-- [ETE3 tree parsing](https://etetoolkit.org/docs/latest/tutorial/tutorial_trees.html) and [drawing](https://etetoolkit.org/docs/latest/tutorial/tutorial_drawing.html)
-- [trimAl manual](https://vicfero.github.io/trimal/)
-- [pyfamsa documentation](https://pyfamsa.readthedocs.io/en/stable/) and [source](https://github.com/althonos/pyfamsa/); FAMSA — Deorowicz, Debudaj-Grabysz & Gudyś, *Scientific Reports* 2016
-- [pyhmmer documentation](https://pyhmmer.readthedocs.io/en/stable/)
+- [ETE3 parsing](https://etetoolkit.org/docs/latest/tutorial/tutorial_trees.html), [drawing](https://etetoolkit.org/docs/latest/tutorial/tutorial_drawing.html)
+- [trimAl manual](https://vicfero.github.io/trimal/), [pyhmmer docs](https://pyhmmer.readthedocs.io/en/stable/)
+- [pyfamsa docs](https://pyfamsa.readthedocs.io/en/stable/); FAMSA — Deorowicz, Debudaj-Grabysz & Gudyś, *Scientific Reports* 2016

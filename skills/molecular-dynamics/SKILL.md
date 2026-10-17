@@ -2,7 +2,7 @@
 name: molecular-dynamics
 description: Runs and analyzes molecular dynamics simulations with OpenMM and MDAnalysis. Sets up protein/small molecule systems, defines force fields, runs energy minimization and production MD, and analyzes trajectories (RMSD, RMSF, contact maps, free energy surfaces). For structural biology, drug binding, and biophysics.
 license: MIT
-compatibility: Requires Python 3.11+ with OpenMM and MDAnalysis; matplotlib for plots. Runs on the CUDA platform by default and falls back to OpenCL, then CPU, when no GPU is verified; a CUDA-enabled OpenMM build and a current NVIDIA driver are needed for the GPU path. Optional PDBFixer and OpenFF need separate installation. Network access for installation; local simulation and analysis run offline.
+compatibility: Python 3.11+ with OpenMM and MDAnalysis; matplotlib for plots. Defaults to the CUDA platform and falls back to OpenCL then CPU when no GPU verifies, so the GPU path needs a CUDA-enabled OpenMM build and a current driver. PDBFixer and OpenFF are optional. Simulation and analysis run offline.
 metadata:
   version: "1.4"
   last-reviewed: "2026-10-17"
@@ -23,59 +23,45 @@ smoke checks use small synthetic systems; GPU performance and scientific converg
 are not established by them. OpenMM latest API pages identify a development build,
 so the installed 8.6.1 API is the executable reference. The platform-selection
 script was reviewed against the 8.6.1 sources and exercised without OpenMM
-installed and against a stand-in API; no CUDA device was driven during that
-review, so run `python -m openmm.testInstallation` and
-`python scripts/select_platform.py` once on the target machine.
+installed and against a stand-in API, including a CUDA plugin that fails to
+load. A Claude Science run on 2026-10-17 verified the CUDA platform on an 8 GiB consumer GPU under Windows with `openmm[cuda13]`, but only once the runtime DLL
+directory was on the search path (see the Windows note below). Run
+`python -m openmm.testInstallation` and `python scripts/select_platform.py`
+once on the target machine.
 
-**Installation into a dedicated environment.** Install the GPU build; the CUDA
-platform is the default this skill targets and the CPU platform ships with it
-anyway, so there is no CPU-only variant to choose separately.
+**Installation.** Install the GPU build — the CPU platform ships with it, so
+there is no separate CPU-only variant to choose.
 
 ```bash
 uv venv --python 3.12 .venv-md
 uv pip install --python .venv-md/bin/python \
-    "openmm[cuda12]==8.6.1" "MDAnalysis==2.10.0" matplotlib pandas
-# Windows: use .venv-md/Scripts/python.exe instead
-# CUDA 13 driver and no need for CUDA 12 compatibility: "openmm[cuda13]==8.6.1"
+    "openmm[cuda13]==8.6.1" "MDAnalysis==2.10.0" matplotlib pandas
+# Windows: .venv-md/Scripts/python.exe ; older CUDA 12 driver: "openmm[cuda12]==8.6.1"
+# conda equivalent: conda install -c conda-forge "openmm=8.6.1" "cuda-version=12.9"
+#   (win-64 openmm 8.6.1 is built against 12.9 and 13.0 only)
 ```
 
-`openmm[cuda12]` pulls `OpenMM-CUDA-12`, which publishes a `win_amd64` wheel and
-brings its own `nvidia-cuda-nvrtc-cu12` and friends: the CUDA platform compiles
-its kernels at runtime through NVRTC, so a separate CUDA Toolkit installation is
-not required. Only the NVIDIA display driver must come from the system. Plain
-`openmm==8.6.1` still gives OpenCL, CPU and Reference, but no CUDA platform.
+The CUDA extra brings its own NVRTC, which compiles kernels at runtime, so no
+separate CUDA Toolkit is needed — only the system display driver. Plain
+`openmm==8.6.1` gives OpenCL, CPU and Reference but no CUDA platform. Match the
+CUDA series to the driver (`nvidia-smi` header, or conda's `__cuda` virtual
+package); major releases are not binary compatible, so the pin is not cosmetic.
+If OpenMM shares an environment with a CUDA torch build, match majors — a
+`+cu132` torch beside `openmm[cuda12]` would install two parallel `nvidia-*` runtime
+sets, wasting GiB and obscuring later breakage.
 
-Conda-forge is the equivalent route for a conda-managed environment; the CUDA
-series is selected by the `cuda-version` pin rather than an extra:
+**Windows: the CUDA runtime DLLs are off the search path.** The pip `nvidia-*`
+wheels (for `cuda13`, `site-packages/nvidia/cu13/bin/x86_64`) are not on the DLL
+search path, so the CUDA plugin fails with error 126, never registers, and
+OpenMM offers OpenCL as if nothing were wrong. Importing `select_platform` puts
+those directories on the path, which works only if it is imported before the
+first `import openmm` in the process; its `notes` list any plugin that failed to
+load, so a quiet OpenCL fallback is visible in the report.
 
-```bash
-conda install -c conda-forge "openmm=8.6.1" "cuda-version=12.9"
-# or "cuda-version=13.0"; win-64 openmm 8.6.1 is built against 12.9 and 13.0 only
-```
-
-Pick the series the installed driver supports: `nvidia-smi` reports the highest
-CUDA version the driver can serve in its header, and conda exposes the same
-thing as the `__cuda` virtual package (`conda info`). Different CUDA major
-releases are not binary compatible, so the pin is not cosmetic.
-
-**Sharing an environment with PyTorch.** If OpenMM lands in an environment that
-already has a CUDA torch build, match the CUDA major version rather than
-letting pip resolve it: a torch built against CUDA 13 (`+cu132`) alongside
-`openmm[cuda12]` installs two parallel sets of `nvidia-*` runtime wheels, which
-wastes several GiB and makes a later breakage hard to attribute. Pair a cu13
-torch with `openmm[cuda13]`. A dedicated environment per stack avoids the
-question entirely and is the safer default when disk is not scarce.
-
-**Validate the install before trusting any run:**
-
-```bash
-python -m openmm.testInstallation
-```
-
-It prints the OpenMM version, lists every registered platform, computes forces
-for a test system on each one, and reports the force differences between them.
-A platform that is listed but errors here is a broken plugin, not a usable
-device. This is the right command to run after any driver update.
+Validate with `python -m openmm.testInstallation`, which lists every registered
+platform, computes forces on each and reports inter-platform differences. A
+platform that is listed but errors there is a broken plugin, not a usable
+device — rerun it after any driver update.
 
 ## Platform Selection: GPU by Default, CPU as Fallback
 
@@ -104,53 +90,37 @@ simulation = Simulation(modeller.topology, system, integrator,
                         **choice.simulation_kwargs())
 ```
 
-- **Precision defaults to `mixed`** on CUDA/OpenCL, overriding OpenMM's `single`
-  default. `mixed` computes forces in single precision and integrates in double,
-  which is the correct trade on a consumer NVIDIA card: GeForce parts carry only
-  token FP64 hardware (reported at 1/64 of the FP32 rate on Ada), so `double` is
-  drastically slower, while `single` alone degrades energy conservation over
-  long integrations. Override per run with `SCI_PRECISION` or the `precision`
-  argument. In OpenMM 8 the property key is `Precision`; `CudaPrecision` is a
-  deprecated alias.
-- **`SCI_PLATFORM` (or the shared `SCI_DEVICE`) is honored verbatim**, modulo
-  capitalization, and is *not* verified — a forced platform must fail loudly at
-  Context creation rather than silently become something else. `SCI_PLATFORM=CPU`
-  is the escape hatch when a GPU misbehaves.
-- **Record the result.** Platform and precision change trajectories in detail
-  and belong in the provenance record; `platform_report()` returns the one-line
-  form. Checkpoints are platform-, hardware- and version-specific.
-- **What verification cannot catch:** a driver that hard-faults the process
-  rather than raising, and anything that depends on system size — a tiny system
-  passing says the platform runs, not that your system fits in VRAM or samples
-  fast enough.
+- **Precision defaults to `mixed`** on CUDA/OpenCL, overriding OpenMM's `single`:
+  forces in single, integration in double, which is the right trade on a GeForce
+  card whose FP64 is reported at 1/64 of FP32 on Ada, while `single` alone
+  degrades energy conservation over long integrations. Override with
+  `SCI_PRECISION` or `precision=`. The OpenMM 8 key is `Precision`
+  (`CudaPrecision` is a deprecated alias).
+- **`SCI_PLATFORM` (or `SCI_DEVICE`) is honored verbatim** and not verified, so a
+  forced platform fails loudly at Context creation instead of silently becoming
+  something else; `SCI_PLATFORM=CPU` is the escape hatch.
+- **Record platform and precision in provenance** — they change trajectories in
+  detail, and checkpoints are platform-, hardware- and version-specific.
+- **Verification cannot catch** a driver that hard-faults rather than raising, or
+  anything size-dependent: a tiny system passing proves the platform runs, not
+  that your system fits in VRAM or samples fast enough.
 
 ### Constraints on an 8 GB consumer card (8 GiB consumer card)
 
-- **VRAM is rarely the MD bottleneck.** Device-side state is a handful of arrays
-  proportional to atom count — positions, velocities, forces, neighbor lists —
-  plus a PME grid and workspace that scale with box volume and cutoff. For the
-  10^4–10^5-atom solvated systems the workflow below builds, that is a small
-  fraction of 8 GB. Throughput, not memory, decides what you can sample: the
-  limit is how many nanoseconds per day the card produces, and the only honest
-  source for that number is your own system. Run a short NPT stage with
-  `StateDataReporter(..., speed=True)` and read the ns/day column; do not plan a
-  campaign from numbers measured on someone else's hardware or system.
-- **When VRAM does bind:** million-atom systems, very fine PME grids or large
-  cutoffs, several Contexts at once (replica exchange, parallel runs), and
-  whatever else already holds memory. On Windows the desktop compositor and a
-  browser take VRAM from the same 8 GB. Check free memory with `nvidia-smi`
-  before a long run; an out-of-memory failure appears when the real Context is
-  created, which the selector's tiny-system check cannot predict.
-- **GeForce on Windows runs under WDDM** (TCC is not available on consumer
-  cards), so kernel launches go through the display driver and the OS can
-  preempt them. A single kernel that runs long enough can trip the display
-  watchdog (TDR, two seconds by default) and take the context down with it.
-  Ordinary MD steps are far shorter than that; minimization on a very large
-  system is the realistic exposure. A run that dies with a device reset points
-  here.
-- **Driving the display from the same GPU** makes desktop interaction stutter
-  and makes `speed=True` timings noisy. Treat benchmark numbers taken on a
-  busy desktop as a lower bound.
+- **VRAM is rarely the MD bottleneck**: device state scales with atom count plus
+  a PME grid, a small fraction of 8 GB for the 10^4–10^5-atom systems below, so
+  throughput decides what you can sample — measure ns/day on your own system
+  with `StateDataReporter(..., speed=True)` rather than trusting others' numbers.
+- **VRAM does bind** for million-atom systems, fine PME grids, large cutoffs or
+  several concurrent Contexts; on Windows the desktop shares the same 8 GB, so
+  check free memory with `nvidia-smi` first — the selector's tiny-system check
+  cannot predict an OOM at real Context creation.
+- **GeForce on Windows runs under WDDM** (no TCC), so a long-running kernel can
+  trip the ~2 s display watchdog and reset the context; ordinary steps are far
+  shorter, but minimization on a very large system is the realistic exposure,
+  and a run dying with a device reset points here.
+- **Driving the display from the same GPU** makes `speed=True` timings noisy;
+  treat numbers from a busy desktop as a lower bound.
 
 ## When to Use This Skill
 
@@ -180,6 +150,7 @@ there or add it to `sys.path`.
 ### 1. System Preparation
 
 ```python
+from select_platform import select_platform, platform_report  # before openmm (Windows DLL path)
 from openmm.app import *
 from openmm import *
 from openmm.unit import *
@@ -238,8 +209,6 @@ def prepare_system_from_pdb(pdb_file, forcefield_name="amber14-all.xml",
 from openmm.app import *
 from openmm import *
 from openmm.unit import *
-
-from select_platform import select_platform, platform_report
 
 def minimize_energy(modeller, system, output_pdb="minimized.pdb",
                      max_iterations=1000, tolerance=10.0, platform_name=None):
