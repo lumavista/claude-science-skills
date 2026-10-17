@@ -235,14 +235,61 @@ Choose batch size by sequence lengths and available memory. It does not truncate
 or contact a service. See [ESMC](references/esm-c-api.md) for hosted output types,
 per-residue extraction, gradient behavior and migration details.
 
-## Hosted authentication and folding
+## Folding with intelligent routing (hosted, local, WSL2)
 
-Read only the intended credential from the environment; pass it explicitly so
-it is resolved when the client is created. SDK factory defaults capture
-`ESM_API_KEY` at import time. Create keys in the
-[Biohub developer console](https://biohub.ai/developer-console/api-keys).
+ESMFold2 folding uses [scripts/fold_with_fallback.py](scripts/fold_with_fallback.py),
+which routes to the best available backend without simulating results. Route order:
 
-Illustrative authenticated inference:
+1. **Hosted API** (if `ESM_API_KEY` set) — works in Claude Science sandbox
+2. **WSL2 local folding** (if WSL2 detected on Windows) — accesses your GPU
+3. **Native Linux/Mac** (if running natively) — GPU or CPU
+4. **Fail loudly** (if no viable route) — clear instructions, no synthetic data
+
+### Setup: Create an API key
+
+Create a key at [Biohub developer console](https://biohub.ai/developer-console/api-keys),
+then set it:
+
+```bash
+export ESM_API_KEY=esm_...
+```
+
+This enables hosted folding from Claude Science sandbox (no GPU, no dependencies,
+no sandbox restrictions). Requests timeout after 300 sec by default.
+
+### Usage: Hybrid folding with fallback
+
+```python
+import sys; sys.path.insert(0, "scripts")
+from fold_with_fallback import fold_with_fallback, FoldingEnvironmentError
+
+sequences = [
+    {"id": "WT", "seq": "MPRTKEINDAGLIVHSPQWFYK"},
+    {"id": "Var01", "seq": "YPRTKEINDAGLIVHSPQWFYK"},
+]
+
+try:
+    results = fold_with_fallback(
+        sequences,
+        model="esmfold2-fast-2026-05",  # hosted: "esmfold2-fast-2026-05"
+        device="cuda",                   # local: "cuda" or "cpu"
+    )
+    
+    for result in results:
+        print(f"{result['id']}: pLDDT={result['plddt_mean']:.1f} ({result['device']})")
+        with open(f"{result['id']}.pdb", "w") as f:
+            f.write(result["pdb"])
+
+except FoldingEnvironmentError as e:
+    print(f"Folding not available in this environment:\n{e}")
+    sys.exit(1)
+```
+
+The function returns `{"id": "...", "pdb": "...", "plddt": [...], "plddt_mean": ..., "device": "..."}`.
+
+### Explicit API usage (if you prefer)
+
+If you want to call the hosted API directly without fallback:
 
 ```python
 import os
