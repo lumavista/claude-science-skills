@@ -233,10 +233,10 @@ specialists:
     \ expect no rendered tree. Bare `python` resolves to C:\\Program Files\\Python 3.10\\python.exe, not\
     \ the phylo environment: always invoke the env interpreter by absolute path. The env's venv lives\
     \ in the per-session workspace, so installs do not persist — begin each session with `pip install\
-    \ pyfamsa dendropy biopython`. Align with pyfamsa and build trees with FastTree 2.2.0 at %USERPROFILE%\\\
-    vaccine-reference\\bin\\FastTree.exe. Run the skill-catalog helper:\n\n  <env python> scripts/phylogenetic_analysis.py\
+    \ pyfamsa dendropy biopython`. Align with pyfamsa and build trees with a local FastTree 2.2.0\
+    \ binary. Run the skill-catalog helper:\n\n  <env python> scripts/phylogenetic_analysis.py\
     \ <sequences.fasta> \\\n    --aligner famsa --fasttree --type aa --threads 1 \\\n    --fasttree-bin\
-    \ %USERPROFILE%\\vaccine-reference\\bin\\FastTree.exe \\\n    --output-dir results --no-visualization"
+    \ <path to FastTree.exe> \\\n    --output-dir results --no-visualization"
   skills:
   - pathogen-variant-surveillance
   - biopython
