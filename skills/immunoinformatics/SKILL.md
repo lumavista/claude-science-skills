@@ -42,6 +42,49 @@ equivalent**, so read `references/tool-licensing.md` — which carries every
 tool's exact version and licence — before wiring any into a published or
 productised pipeline.
 
+## MHC prediction backends and fallback routing
+
+[scripts/predict_mhc_with_fallback.py](scripts/predict_mhc_with_fallback.py)
+provides intelligent routing for MHC Class I prediction. **Never simulate MHC
+predictions** — if no backend is available, fail with clear instructions instead.
+
+Route order (first available wins):
+1. **Local MHCflurry** (if model successfully loads) — works offline, no dependencies
+2. **NetMHCpan** (if installed and on PATH) — higher accuracy, requires license
+3. **Fail with clear instructions** (no synthetic predictions)
+
+Example usage:
+
+```python
+import sys; sys.path.insert(0, "scripts")
+from predict_mhc_with_fallback import predict_mhc_class1_with_fallback, MHCPredictionError
+
+peptides = ["FVFSTSFYL", "YVFSTSFYL", "MTMPLSCTK"]
+alleles = ["HLA-A*02:01", "HLA-A*11:01"]
+
+try:
+    results = predict_mhc_class1_with_fallback(
+        peptides,
+        alleles,
+        include_percentile=True,
+    )
+    
+    for r in results:
+        print(f"{r['peptide']} → {r['allele']}: "
+              f"{r['percentile_rank']:.3f}% ({r['backend']})")
+
+except MHCPredictionError as e:
+    print(f"MHC prediction not available:\n{e}")
+    sys.exit(1)
+```
+
+Returns `{"peptide": "...", "allele": "...", "percentile_rank": ..., "backend": "mhcflurry"|"netmhcpan"}`.
+
+**Why no simulation:** Synthetic MHC predictions waste experimental resources.
+If the model cannot load or download (common in sandboxes), fail loudly and
+report what is needed. This prevents silent errors that appear correct until
+validation.
+
 ## Workflow
 
 Run every step through `scripts/epitope_triage.py`, which encodes the ordering,
