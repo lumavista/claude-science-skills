@@ -214,12 +214,29 @@ def cmd_mhc1(args: argparse.Namespace) -> None:
     out = Path(args.out)
     write_tsv(out, [
         "peptide", "length", "source", "position", "allele",
-        "presentation_score", "presentation_percentile", "affinity_nM",
+        "presentation_percentile", "presentation_score", "affinity_nM",
     ], rows)
+
+    # Add header comments to clarify ranking metric
+    lines = out.read_text().splitlines()
+    with out.open("w") as fh:
+        fh.write("# EPITOPE RANKING: Sort by 'presentation_percentile' (≤2%), NOT by 'affinity_nM'\n")
+        fh.write("# presentation_percentile is the ranking metric (lower is better).\n")
+        fh.write("# affinity_nM and presentation_score are shown for reference only.\n")
+        for line in lines:
+            fh.write(line + "\n")
+
     log(f"mhc1: {len(rows)} rows -> {out}  (rank on percentile, not affinity)")
     import mhcflurry
-    write_meta(out, {"predictor": "mhcflurry", "version": mhcflurry.__version__,
-                     "alleles": usable, "lengths": lengths})
+    write_meta(out, {
+        "predictor": "mhcflurry",
+        "version": mhcflurry.__version__,
+        "alleles": usable,
+        "lengths": lengths,
+        "ranking_metric": "presentation_percentile (≤2% = strong binder)",
+        "warning": "Rank ordering is NOT calibrated. Rank 1 vs rank 20 are not reliably distinguishable. Carry ≥15 candidates into screening.",
+        "note": "affinity_nM and presentation_score are reference only; do not rank on them."
+    })
 
 
 # -------------------------------------------------------------------------- mhc2
@@ -258,10 +275,26 @@ def cmd_mhc2(args: argparse.Namespace) -> None:
             continue
     rows.sort(key=lambda r: r[3])
     write_tsv(out, ["peptide", "allele", "position", "rank_percent"], rows)
+
+    # Add header comments to clarify ranking metric and limitations
+    lines = out.read_text().splitlines()
+    with out.open("w") as fh:
+        fh.write("# CLASS II EPITOPE RANKING: Sort by 'rank_percent' (lower is better)\n")
+        fh.write("# ⚠️  CLASS II PREDICTIONS ARE LESS ACCURATE than class I (open groove, shifting registers)\n")
+        fh.write("# Do not present class II rankings with equal confidence to class I predictions.\n")
+        for line in lines:
+            fh.write(line + "\n")
+
     log(f"mhc2: {len(rows)} rows -> {out}  (class II ranks are less reliable "
         f"than class I; raw output kept at {raw})")
-    write_meta(out, {"predictor": "netMHCIIpan", "alleles": alleles,
-                     "length": args.length})
+    write_meta(out, {
+        "predictor": "netMHCIIpan",
+        "alleles": alleles,
+        "length": args.length,
+        "ranking_metric": "rank_percent (lower is better)",
+        "warning": "Class II prediction is substantially less accurate than class I. Do not present with equal confidence.",
+        "note": "Negative predictions are weak; absence from this list is not evidence a peptide is not an epitope."
+    })
 
 
 # -------------------------------------------------------------------------- iedb
@@ -311,10 +344,21 @@ def cmd_iedb(args: argparse.Namespace) -> None:
     out = Path(args.out)
     write_tsv(out, ["peptide", "length", "structure_type",
                     "source_organism", "source_antigen"], rows)
+
+    # Add header comment to emphasize importance of IEDB validation
+    lines = out.read_text().splitlines()
+    with out.open("w") as fh:
+        fh.write("# EXPERIMENTALLY VALIDATED EPITOPES from IEDB\n")
+        fh.write("# ✓ These outrank any computational prediction\n")
+        fh.write("# A validated epitope in a well-studied antigen with no IEDB support is worth skepticism\n")
+        for line in lines:
+            fh.write(line + "\n")
+
     log(f"iedb: {len(rows)} validated linear epitopes -> {out}  "
         f"(these outrank any prediction)")
     write_meta(out, {"source": "IEDB query API", "query": args.organism,
-                     "retrieved": len(rows)})
+                     "retrieved": len(rows),
+                     "note": "Validated epitopes outrank predictions. Check this list BEFORE ranking"})
 
 
 # ------------------------------------------------------------------ conservation
@@ -342,9 +386,26 @@ def cmd_conservation(args: argparse.Namespace) -> None:
     write_tsv(out, ["peptide", "source", "position",
                     "n_intact", "n_sequences", "conserved_fraction"], out_rows)
     fully = sum(1 for r in out_rows if r[5] == 1.0)
+
+    # Add header comment about sampling bias
+    lines = out.read_text().splitlines()
+    with out.open("w") as fh:
+        fh.write("# CONSERVATION (alignment-free fallback, no Henikoff weighting)\n")
+        fh.write("# ⚠️  This is a raw count without correcting for redundant sampling\n")
+        fh.write("# A clade-dominated panel will report clade-specific peptides as highly conserved\n")
+        fh.write("# Check WHY a region is conserved: functional constraint or shallow sampling?\n")
+        for line in lines:
+            fh.write(line + "\n")
+
     log(f"conservation: {fully}/{len(out_rows)} intact in all sampled sequences "
         f"-> {out}  (check sampling depth before trusting a high fraction)")
-    write_meta(out, {"variant_file": args.variants, "n_sequences": total})
+    write_meta(out, {
+        "variant_file": args.variants,
+        "n_sequences": total,
+        "method": "alignment-free count (no Henikoff weighting)",
+        "warning": "Does not correct for redundant sampling. Clade-skewed panel inflates fractions.",
+        "note": "For publication, prefer conservation-mapping skill with alignment + Henikoff weighting + effective sample size"
+    })
 
 
 # --------------------------------------------------------------------- selfcheck
@@ -399,12 +460,33 @@ def cmd_selfcheck(args: argparse.Namespace) -> None:
     out = Path(args.out)
     write_tsv(out, header, out_rows)
     flagged = sum(1 for r in out_rows if r[-1] != "ok")
+
+    # Add header comment about mandatory review
+    lines = out.read_text().splitlines()
+    with out.open("w") as fh:
+        fh.write("# SAFETY FILTER: Self-similarity screening (human proteome cross-reactivity check)\n")
+        if flagged:
+            fh.write("# ⚠️  FLAGGED CANDIDATES REQUIRE EXPERT REVIEW\n")
+            fh.write("# Exact or near-exact self-matches carry theoretical autoimmunity risk\n")
+            fh.write("# Do NOT silently rank flagged candidates. Review with someone qualified.\n")
+        else:
+            fh.write("# ✓ No exact or near-exact matches to human proteome\n")
+        fh.write("# Also screen separately against known allergens (AllergenOnline, FAO/WHO criterion)\n")
+        for line in lines:
+            fh.write(line + "\n")
+
     log(f"selfcheck: {flagged} candidates flagged -> {out}")
     if flagged:
         log("  Review every flagged candidate with someone qualified to assess "
             "autoimmunity risk. Do not silently rank them.")
-    write_meta(out, {"human_proteome": args.human_proteome,
-                     "threshold": args.threshold, "flagged": flagged})
+    write_meta(out, {
+        "human_proteome": args.human_proteome,
+        "threshold": args.threshold,
+        "flagged": flagged,
+        "screening_status": "Safety filter (mandatory for anything entering a human)",
+        "warning": "Flag and review any candidate with close identity to human protein. Escalate, do not silently rank.",
+        "note": "Also screen separately against allergens (AllergenOnline or FAO/WHO ≥35% identity over 80 aa)"
+    })
 
 
 # ---------------------------------------------------------------------- coverage
@@ -433,14 +515,29 @@ def cmd_coverage(args: argparse.Namespace) -> None:
     write_tsv(out, ["peptide", "alleles", "n_alleles"],
               [[p, ",".join(sorted(a)), len(a)] for p, a in sorted(pairs.items())])
 
+    # Add header comment about per-region reporting
+    lines = out.read_text().splitlines()
+    with out.open("w") as fh:
+        fh.write("# POPULATION COVERAGE INPUT: Ready for IEDB analysis\n")
+        fh.write("# ⚠️  Request BOTH global and per-region breakdowns\n")
+        fh.write("# A construct at 95% world coverage can sit far lower in a specific region\n")
+        fh.write("# Report minimum and 10th percentile, not just the aggregate\n")
+        for line in lines:
+            fh.write(line + "\n")
+
     log(f"coverage: {len(pairs)} self-clean peptide/allele sets -> {out}")
     log(f"  Submit {tool_input} to the IEDB population coverage tool:")
     log("    https://nextgen-tools.iedb.org/pipeline?tool=population_coverage")
     log(f"  Request population '{args.population}' AND per-region breakdowns — a "
         "high world figure can hide a low one in a specific population.")
-    write_meta(out, {"population_requested": args.population,
-                     "n_peptides": len(pairs),
-                     "tool": "IEDB population coverage (manual submission)"})
+    write_meta(out, {
+        "population_requested": args.population,
+        "n_peptides": len(pairs),
+        "tool": "IEDB population coverage (manual submission)",
+        "reporting_requirement": "Report per-region coverage, not just global aggregate",
+        "warning": "A high global figure can mask low coverage in a specific region. Report minimum and 10th percentile.",
+        "note": "The aggregate is the misleading number. Name uncovered strains and state whether gaps were deliberate."
+    })
 
 
 # ------------------------------------------------------------------------- main
