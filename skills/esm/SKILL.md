@@ -67,20 +67,37 @@ model rather than assuming pip resolved sensibly. Note also that the default
 PyPI torch wheel on Windows is CPU-only, so `torch.cuda.is_available()` being
 `False` is usually the wheel, not the hardware.
 
-**Two Windows installation facts, measured 2026-10-17.** Host-side pip under
-Claude Science refuses both `--index-url` and the `name[extra]` form, so the
-CUDA torch install above has to run with pip invoked as a subprocess inside the
-sandbox. And a CUDA torch tree carries a 127-character member, so it needs
-either long-path support enabled or an environment root under ~114 characters;
-a per-session workspace root is already longer than that on its own, which is
-why a deep venv fails to install even after the wheel downloads cleanly.
-Separately, `torch.compile` is unavailable on native Windows — it needs Triton,
-which publishes no `win_amd64` wheel — so treat eager execution as the only
-local mode and do not plan a speedup around compilation. On Windows with long paths
-disabled (the default), torch's deepest wheel file sits 146 characters below
-the env root, so the venv root must be at most 113 characters — create it at a
-short path such as `C:\venvs\esm`, or enable `LongPathsEnabled`, rather than
-nesting it in a deep workspace, where the install fails partway through.
+**Windows installation, measured 2026-10.** Four obstacles, in the order they
+bite:
+
+- Host-side pip under Claude Science refuses both `--index-url` and the
+  `name[extra]` form, so the CUDA torch install above must run with pip invoked
+  as a subprocess inside the sandbox.
+- With long paths disabled, the install dies partway on `MAX_PATH` even though
+  the wheel downloads cleanly. Do not plan around a remembered number: the
+  binding file is whichever resolved wheel has the deepest member, it is not
+  necessarily torch, and it moves with the version — measured examples include
+  torch at 119–127 characters depending on build, setuptools at 113 and
+  `jupyterlab_widgets` at 161, the last of which alone caps an env root near 80
+  characters. Measure the resolved set, or remove the limit: `LongPathsEnabled`
+  was set to 1 on the reference host and a fresh process honors it at the OS
+  level (a 451-character path round-tripped with no `\\?\` prefix), but a pip
+  install at workspace depth has not been re-run under it, so treat the failure
+  as probably retired rather than proven gone. A short env root outside the
+  workspace is **not** an escape here — paths like `C:\venvs\esm` are
+  unreachable from the sandbox, and `subst` is denied. Failing that, extracting
+  the resolved wheels into a `\\?\`-prefixed site-packages works, as does
+  skipping local weights for the hosted client.
+- `huggingface_hub` raises `WinError 1314` creating symlinks; set
+  `HF_HUB_DISABLE_SYMLINKS=1`.
+- `USERNAME` is unset in the sandbox, so `getpass.getuser()` fails and
+  `torch._inductor` raises `ModuleNotFoundError: 'pwd'`. Set
+  `TORCHINDUCTOR_CACHE_DIR`. The same unset variable is why `parmed` needs
+  `os.environ["USERNAME"]` set before import — one defect, two symptoms.
+
+`torch.compile` is unavailable on native Windows regardless: it needs Triton,
+which publishes no `win_amd64` wheel, so eager execution is the only local mode
+and no speedup should be planned around compilation.
 
 Footprint below is arithmetic, not a published figure — parameters x bytes per
 parameter plus ~⅓ for activations and fragmentation, which is what
@@ -90,10 +107,17 @@ Budget against usable memory, not the card's spec: a display-attached 8 GiB card
 measured ~6 GiB free, which is why `fits_in_vram()` subtracts a reserve and
 why the fp32 row below is out rather than merely tight.
 
-| Checkpoint | Params | bf16 weights | On an 8 GiB card |
+**The bf16 column is not what you get by default.** The documented loading path
+(`from_pretrained` then `embed_sequences`) loads fp32 and never applies
+`autocast_dtype()`, so the real cost is roughly double the column: ESMC-300M
+measured a ~1.3 GiB peak, against the ~0.6 GiB the table implies. Cast
+explicitly to claim the bf16 figures, and read the column as the floor
+available with a cast rather than the default.
+
+| Checkpoint | Params | bf16 weights (with an explicit cast) | On an 8 GiB card |
 | --- | --- | --- | --- |
-| `biohub/ESMC-300M` | 300M | ~0.6 GiB | comfortable |
-| `biohub/ESMC-600M` | 600M | ~1.2 GiB | comfortable |
+| `biohub/ESMC-300M` | 300M | ~0.6 GiB (fp32 default measured 1.3 GiB peak) | comfortable |
+| `biohub/ESMC-600M` | 600M | ~1.2 GiB (~2.4 GiB in fp32) | comfortable |
 | `esm3-sm-open-v1` | 1.4B | ~2.8 GiB | fits in bf16; fp32 (~5.6 GiB) will not |
 | `biohub/ESMC-6B` | 6B | ~12 GiB | does not fit — use the hosted client |
 | `biohub/ESMFold2` | — | — | chain length binds, not weights; see below |
@@ -190,7 +214,12 @@ from esm.models.esmc import EsmcForMaskedLM, EsmcTokenizer
 from esm_embeddings import embed_sequences
 from _device import select_device
 
-model = EsmcForMaskedLM.from_pretrained("biohub/ESMC-300M", device=select_device()).eval()
+device = select_device()
+model = EsmcForMaskedLM.from_pretrained("biohub/ESMC-300M", device=device).eval()
+# from_pretrained loads fp32; cast explicitly or pay roughly double the VRAM.
+dtype = autocast_dtype(device)
+if dtype is not None:
+    model = model.to(dtype)
 tokenizer = EsmcTokenizer()
 sequences = ["MPRTKEINDAGLIVHSPQWFYK", "ACDEFGHIK"]
 features = embed_sequences(model, tokenizer, sequences)
@@ -263,13 +292,16 @@ establish account access, service availability or prediction quality.
 [references/review.md](references/review.md) records official sources, executed
 CPU tests and limitations. Run `python tests/run_all.py --isolated esm` from the
 repository to exercise synthetic local models, pooling, input serialization,
-PDB round trips and mocked hosted contracts. Pretrained ESM3/ESMC/ESMFold2,
-CUDA inference and authenticated services were not executed.
+PDB round trips and mocked hosted contracts. ESM3 and ESMFold2 pretrained
+inference and authenticated services were not executed.
 
-`scripts/_device.py` was exercised only without torch installed, confirming the
-fallback (returns `cpu`; helpers return `None` rather than raising) and the
-`SCI_DEVICE` override; its CUDA branch and the VRAM table are unverified by
-execution.
+`scripts/_device.py` is verified on both branches: the CPU fallback (no torch
+installed — returns `cpu`, helpers return `None` rather than raising, and
+`SCI_DEVICE` is honored) and the CUDA branch, where `device_report()` returned
+`cuda (<GPU name>, 8.0 GiB)` on the reference host in 2026-10. Note
+that it reports total memory, not the ~6 GiB usable, which is why
+`fits_in_vram()` subtracts a reserve. The per-checkpoint VRAM column remains
+arithmetic apart from ESMC-300M, whose fp32 default measured a ~1.3 GiB peak.
 
 Follow the selected model's terms and the
 [Biohub acceptable-use policy](https://biohub.org/acceptable-use-policy/).

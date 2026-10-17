@@ -26,8 +26,8 @@ script was reviewed against the 8.6.1 sources and exercised without OpenMM
 installed and against a stand-in API, including a CUDA plugin that fails to
 load. A Claude Science run on 2026-10-17 verified the CUDA platform on an 8 GiB consumer GPU under Windows with `openmm[cuda13]`, but only once the runtime DLL
 directory was on the search path (see the Windows note below). Run
-`python -m openmm.testInstallation` and `python scripts/select_platform.py`
-once on the target machine.
+`python scripts/select_platform.py` and the installation test below once on the
+target machine.
 
 **Installation.** Install the GPU build — the CPU platform ships with it, so
 there is no separate CPU-only variant to choose.
@@ -71,7 +71,11 @@ workspace-resident venv also may not survive a sweep — budget a reinstall.
 Validate with `python -m openmm.testInstallation`, which lists every registered
 platform, computes forces on each and reports inter-platform differences. A
 platform that is listed but errors there is a broken plugin, not a usable
-device — rerun it after any driver update.
+device — rerun it after any driver update. On Windows with the pip CUDA wheels,
+plain `python -m openmm.testInstallation` imports openmm without the DLL path
+and reports no CUDA platform on a working install; run it from `scripts/` as
+`python -c "import select_platform, runpy; runpy.run_module('openmm.testInstallation', run_name='__main__')"`
+so the DLL directories are on the path first.
 
 ## Platform Selection: GPU by Default, CPU as Fallback
 
