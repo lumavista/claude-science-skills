@@ -82,7 +82,7 @@ Reference host: Windows 11, **an 8 GiB consumer GPU**.
 | `scanpy` | rapids-singlecell: PCA, neighbors, UMAP, Leiden | **WSL2 only** — see below |
 | `construct-assembly` | ThermoMPNN when scanning many mutants | CPU fine for a handful |
 | `immunoinformatics` | routing only | `references/compute-routes.md` |
-| `tamarind` | cloud GPU | for jobs exceeding 8 GiB |
+| `tamarind` | cloud GPU | for jobs exceeding the ~6 GiB usable budget |
 
 ### Four constraints worth knowing before you debug
 
