@@ -2,9 +2,9 @@
 name: scanpy
 description: Performs Scanpy single-cell RNA-seq QC, normalization, HVG selection, PCA/UMAP/t-SNE, clustering, exploratory marker ranking, pseudobulk preparation, visualization, and Seurat or SingleCellExperiment RDS conversion to h5ad. Applies to established exploratory scRNA-seq workflows with explicit count and expression provenance; complementary skills cover scvi-tools models and AnnData format details.
 license: BSD-3-Clause
-compatibility: Requires Python 3.12+ and Scanpy; tested with Python 3.13, Scanpy 1.12.4, and AnnData 0.13.4. Optional integrations need separate packages; R conversion needs R. Local analysis needs no credentials or network.
+compatibility: Requires Python 3.12+ and Scanpy; tested with Python 3.13, Scanpy 1.12.4, and AnnData 0.13.4. Optional integrations need separate packages; R conversion needs R. Optional GPU acceleration needs rapids-singlecell on Linux or WSL2 (no native-Windows RAPIDS wheels) and falls back to CPU. Local analysis needs no credentials or network.
 metadata:
-  version: "1.8"
+  version: "1.9"
   last-reviewed: "2026-10-01"
   upstream-version: "1.12.4"
   skill-author: K-Dense Inc.
@@ -32,7 +32,50 @@ For large or out-of-core datasets, many functions support [Dask](https://docs.da
 uv pip install "scanpy[leiden]" dask
 ```
 
-See the [Using dask with Scanpy](https://scanpy.scverse.org/en/stable/tutorials/experimental/dask.html) tutorial. For GPU-accelerated scanpy-like operations, use [rapids-singlecell](https://rapids-singlecell.readthedocs.io/) as a separate package.
+See the [Using dask with Scanpy](https://scanpy.scverse.org/en/stable/tutorials/experimental/dask.html) tutorial.
+
+## Optional GPU acceleration
+
+The bundled scripts run PCA, the neighbor graph, UMAP and Leiden/Louvain on
+[rapids-singlecell](https://rapids-singlecell.scverse.org/) when a CUDA device is usable, and on scanpy otherwise. There is nothing to switch on: `scripts/_common.py` probes once, logs `GPU backend: ...` when it finds one, and silently stays on scanpy when it does not. Scanpy remains the reference implementation — every GPU step validates the keys it wrote and recomputes on the CPU if anything is off.
+
+**On native Windows this path never activates.** RAPIDS (cuML / cuVS / cuGraph), which rapids-singlecell is built on, ships no native-Windows wheels. NVIDIA's install matrix lists Linux with `glibc>=2.28` plus "Windows 11 using a WSL2 specific install (WSL1 not supported)", and rapids-singlecell publishes prebuilt wheels for x86_64 and aarch64 **Linux** only. A Windows user who wants the GPU path must run the whole analysis inside WSL2 with an NVIDIA GPU of compute capability 7.0+ (Turing or newer):
+
+```bash
+# inside WSL2 (Ubuntu); the Windows host driver provides CUDA, do not install a driver in WSL
+pip install rapids-singlecell-cu12   # or -cu13
+```
+
+Control it explicitly with the same `SCI_DEVICE` variable the other skills in this collection use:
+
+- `SCI_DEVICE=cpu` — force scanpy, ignoring any GPU. Use this when reproducing an earlier run.
+- `SCI_DEVICE=cuda` — require the GPU. If rapids-singlecell or the device is missing the scripts stop with an actionable error instead of quietly running on the CPU.
+- unset — autodetect, falling back to scanpy.
+
+### What the GPU does and does not change
+
+| Step | Backend | Reproducible against CPU? |
+|------|---------|---------------------------|
+| PCA | `rsc.pp.pca` | Same subspace, not bitwise: no ARPACK on the GPU, and components may differ in sign and at solver tolerance |
+| Neighbors | `rsc.pp.neighbors` (cuVS, exact brute force) | No — scanpy's default pynndescent graph is approximate, the GPU graph is exact. Upstream documents this as an expected difference |
+| UMAP | `rsc.tl.umap` (cuML) | No — a different implementation, not a port. Seeding does not make the coordinates match umap-learn |
+| Leiden / Louvain | `rsc.tl.leiden` / `rsc.tl.louvain` (cuGraph) | No — cuGraph takes neither `flavor="igraph"` nor scanpy's `n_iterations=2`, so labels and even the cluster count can differ at the same resolution |
+
+Consequences worth stating plainly: a UMAP figure and a cluster assignment produced on the GPU will not reproduce the CPU ones, and cell-type annotations keyed to cluster IDs do not survive a backend switch. Pin `SCI_DEVICE` for any run you intend to repeat or compare, and record which backend produced a figure. Marker ranking, DE and pseudobulk are unaffected because they consume counts and `.raw`, which the GPU path never touches.
+
+### VRAM
+
+Single-cell matrices exhaust a consumer card long before they exhaust system RAM, so before copying anything to the device the scripts cost the matrix, compare it against **free** VRAM, and stay on the CPU when it does not fit. A dataset that is too big is therefore slow, not a crash.
+
+The budget is driven by stored values, not cell count. A sparse matrix uploads as CSR float32 with 32-bit indices: 8 bytes per stored value plus 4 per cell, times a factor of 3 for solver workspace and fragmentation. An 8 GiB card with a desktop on it leaves roughly 6-7 GiB free, which puts the ceiling near 250M stored values — comfortable for a few hundred thousand cells at 2000 HVGs, out of reach for a million-cell full-gene matrix. These are the numbers the guard computes, not a measured throughput claim; the guard is a heuristic, so a run can still OOM inside a kernel.
+
+Do not expect managed memory to rescue an oversized run on this platform: RAPIDS cannot oversubscribe GPU memory on Windows or WSL, so there the overflow is an OOM rather than a spill to host RAM. Reduce `--n-top-genes`, subset cells, or set `SCI_DEVICE=cpu`.
+
+### Deliberately left on the CPU
+
+Normalization, log1p, HVG selection, `regress_out` and `scale` keep running in scanpy even when a GPU is present, although rapids-singlecell implements them. They act on the full-gene matrix — the largest object in the workflow and the first thing to fill 8 GiB — and `layers["counts"]` and `.raw` must come out byte-identical. t-SNE stays on the CPU as an optional side embedding whose cuML parameterization is not a drop-in match. QC, filtering, marker ranking, aggregation, I/O and plotting are I/O-bound or cheap and gain nothing.
+
+No speedup figures are quoted anywhere in this skill: none were measured on this hardware, and the honest expectation is "faster on large data, no help on small data". Benchmark your own dataset before planning around the GPU.
 
 If the input is an R-native single-cell object (`.rds`, `.RData`, Seurat, or SingleCellExperiment), first convert it to `.h5ad` with R tooling, then load it with Scanpy. Read `references/r_interop.md` for agent-run installation and conversion instructions across macOS, Linux, and Windows.
 
@@ -63,6 +106,11 @@ For AnnData structure and I/O details, use the **anndata** skill. For probabilis
 - The toolkit loads files into memory. For backed data, explicitly call `.to_memory()`
   on a chosen subset and close the file; backed mode is not a general out-of-core
   pipeline. Copy views before mutation. Dask support varies by function/array layout.
+- The compute backend is part of the provenance. PCA, neighbors, UMAP and clustering run
+  on rapids-singlecell when a CUDA device is usable and on scanpy otherwise, and the two do
+  not agree bitwise; the GPU neighbor graph is exact where scanpy's default is approximate.
+  Pin `SCI_DEVICE` and record it before comparing or reproducing runs. Counts, `.raw`,
+  normalization and marker statistics are untouched by the backend.
 - `.rds` needs an explicit R conversion stage. Cluster IDs do not determine cell types:
   all mappings/signature assets are illustrative human marker examples, requiring review.
 
@@ -91,7 +139,7 @@ This skill should be used when:
 
 This skill bundles ready-to-run CLI scripts in `scripts/` for every common step. **Run these instead of hand-writing scanpy code** — they handle file loading by extension, figure setup, sensible defaults, raw-count preservation, and progress logging. Each reads and writes `.h5ad`, so they chain together, and each has its own `--help`. Only drop down to writing scanpy code when a task isn't covered by a script or needs unusual customization.
 
-All scripts use a shared `scripts/_common.py` helper (loading, saving, figure config) — keep it alongside the others. Run from the skill directory or pass full paths; figures default to `./figures/`.
+All scripts use a shared `scripts/_common.py` helper (loading, saving, figure config, GPU backend selection) — keep it alongside the others. Run from the skill directory or pass full paths; figures default to `./figures/`.
 
 | Script | Purpose | Typical call |
 |--------|---------|--------------|
@@ -254,7 +302,8 @@ file. See also [references/standard_workflow.md](references/standard_workflow.md
 ### scripts/ (CLI toolkit)
 A composable set of `.h5ad`-in/`.h5ad`-out scripts covering the whole workflow plus a one-command end-to-end pipeline. See the **Script Toolkit** section above for the full table and chaining examples. Each script has `--help`. Files:
 
-- `_common.py` — shared loading/saving/figure helpers imported by the others (not a CLI)
+- `_common.py` — shared loading/saving/figure helpers and the `select_backend()` GPU
+  selector imported by the others (not a CLI)
 - `run_pipeline.py` — full pipeline in one command (flags or `--config` JSON)
 - `inspect_data.py`, `convert.py` — explore and load/convert any input format
 - `qc_analysis.py`, `preprocess.py`, `reduce_dimensions.py`, `batch_correct.py`, `cluster.py` — pipeline steps

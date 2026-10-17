@@ -2,7 +2,7 @@
 name: construct-assembly
 description: Turns candidate antigen or protein designs into orderable constructs and screens them for sequence-level liabilities. Covers linker choice and length, purification and detection tag placement, trimerisation and particle-display domains, signal peptides, junction scanning, point-mutant stability prediction with ThermoMPNN, and local developability screening — free cysteines, unintended N-glycosylation sequons created by design, deamidation and isomerisation motifs, hydrophobic patches, GRAVY and isoelectric point. Use when assembling an immunogen, fusion protein or epitope construct for expression, choosing linkers or tags, deciding how to trimerise or display an antigen, or ranking designs before committing to synthesis. Inverse folding, de novo design and structure refolding are not run here — those go to the tamarind skill.
 license: MIT
-compatibility: Python 3.10+, standard library only for the developability screen. ThermoMPNN is optional, MIT-licensed, CPU-capable, and installed from source by git SHA (no release tags). Cloud GPU jobs for MPNN design and refolding are delegated to the tamarind skill. No GPU or network access needed for anything in this skill's own scripts.
+compatibility: Python 3.10+, standard library only for the developability screen. ThermoMPNN is optional, MIT-licensed, installed from source by git SHA (no release tags), and uses a GPU when torch finds one while remaining fast enough on CPU for small mutant sets. Cloud jobs for MPNN design and refolding are delegated to the tamarind skill when they exceed local VRAM. No GPU or network access is needed for anything in this skill's own scripts.
 metadata:
   version: "1.0"
   skill-author: Drafted for vaccine-design subset
@@ -27,7 +27,7 @@ prediction for refold validation. Those are GPU jobs and belong to `tamarind`,
 which discovers tool schemas live — reimplementing submission here would drift
 out of sync with it. Follow `tamarind`'s own rule: prefer the dedicated
 structure-prediction skills where they can run, and say which of cloud
-execution, no local GPU, or batch size makes Tamarind necessary before
+execution, insufficient local VRAM, or batch size makes Tamarind necessary before
 submitting.
 
 ## First: does this construct have to fold?
@@ -84,9 +84,28 @@ filter them away silently.
 ### 3. Predict stability for point mutants
 
 For stabilising substitutions — disulfide staples, cavity filling, proline
-substitutions at a hinge — rank with **ThermoMPNN** (MIT, CPU, same
-architecture class as ProteinMPNN, so a laptop is enough). SHA-pin it; there
-are no release tags.
+substitutions at a hinge — rank with **ThermoMPNN** (MIT, same architecture
+class as ProteinMPNN). SHA-pin it; there are no release tags.
+
+ThermoMPNN runs on a GPU when torch finds one and on CPU otherwise. It is
+small enough that CPU is genuinely adequate for a handful of point mutants, so
+the GPU matters only when scanning a full site-saturation matrix, where the
+job is many independent forward passes and batching them is the whole win.
+Nothing in this skill's own scripts needs a GPU — the developability screen is
+standard library only.
+
+Pick the device rather than hardcoding one, and keep `SCI_DEVICE` working so a
+CPU rerun stays reproducible:
+
+```python
+import os, torch
+device = os.environ.get("SCI_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
+```
+
+`torch.cuda.is_available()` returning `False` on a machine with a GPU usually
+means a CPU-only torch wheel rather than a hardware fault — on Windows that is
+the default PyPI wheel, so install from the `download.pytorch.org/whl/cu###`
+index if ThermoMPNN runs slower than expected.
 
 `ThermoMPNN-D` handles double mutants and `ThermoMPNN-I` handles indels. Pass
 through the authors' own caveat on the indel model: it has had only limited

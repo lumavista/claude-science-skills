@@ -128,6 +128,8 @@ The callback must return a boolean rejection decision using the planned alpha in
 
 Report the **Monte Carlo confidence interval** on the estimate (the harness returns it) to quantify simulation sampling error; it does not cover uncertainty in the assumed effect, model, or adaptively chosen n. See `references/simulation_based_power.md` for the full patterns, including how to search for the n that hits target power and how to model dropout and clustering.
 
+Simulation here is CPU-bound by construction: step 2 deliberately calls your exact statsmodels test or model (GLM, MixedLM) per replicate — iterative solves on tiny matrices, unbatchable, and a GPU would mean reimplementing each model and losing the point. For simple closed-form cases numpy vectorisation removes the loop with no new dependency; across replicates, multiprocessing over CPU cores is the right parallelism.
+
 ---
 
 ## Adjustments people forget

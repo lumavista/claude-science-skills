@@ -189,6 +189,8 @@ gene lists require headers; rank files accept comma/tab separators and an option
 
 Run `python scripts/run_enrichment.py --help` for all options (background file, FDR cutoff, min/max set size, permutations).
 
+This is CPU-bound work, and that is fine: GSEApy's permutation core is already a multi-threaded Rust extension, so 1000 permutations is a seconds-scale job, and GSEApy exposes no GPU backend. The driver defaults `--threads 4`; raising it toward the core count is the available speedup.
+
 ## Common Pitfalls
 
 These cause most wrong or irreproducible results:

@@ -29,6 +29,11 @@ ETE3 **3.1.3** on Python 3.12. ETE3 remains deliberate for this helper; ETE4 is 
 separate API and is not a drop-in replacement. ETE3 imports `cgi`, removed in
 Python 3.13. The native executables are not Python packages.
 
+Inference is CPU-bound: neither FastTree nor IQ-TREE has a CUDA path, so threads
+are the only parallelism available. BEAGLE's CUDA kernels do exist, but they serve
+Bayesian MCMC in BEAST or MrBayes — a different inference method than this skill
+performs, so using them would mean replacing the method rather than accelerating it.
+
 Illustrative installation commands; verify executable versions after installation:
 
 ```bash
