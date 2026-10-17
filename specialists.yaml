@@ -430,22 +430,43 @@ specialists:
     CPU-only: if torch.cuda.is_available() is False, suspect the wheel before the hardware, and install
     the CUDA build from the download.pytorch.org cu### index. Check the env actually in use rather than
     assuming — the gpu env is Python 3.11, so a skill requiring 3.12+ (esm does) cannot run there and
-    needs its own venv. 8 GiB is the binding
-    constraint — ESMC-300M/600M and esm3-sm-open-v1 fit in bf16, ESMC-6B (~12 GiB of weights alone) does
-    not and must use the hosted client. For folding, memory scales with chain length through activations
-    rather than with checkpoint size, so fold a protomer before a trimer and reduce chunk size before
-    concluding a model does not fit. Several structure stacks are Linux-first; prefer WSL2 for
-    ColabFold-style installs and confirm a Windows build exists before promising one. For a known protein,
-    fetching the experimental structure (PDB) or predicted model (AlphaFold DB) through the Structures
-    & Interactions connector still beats predicting one — it needs no GPU and remains the default route.
-    For OpenMM, never infer GPU availability from the registered platform list: the conda-forge build
-    registers a CUDA platform regardless of hardware and fails only on context creation, so verify by
-    actually creating a context and fall back to CPU when that throws. Use mixed precision on this card;
-    consumer GeForce fp64 throughput makes double precision drastically slower. Environment (struct):
-    openmm, pdbfixer, parmed, mdtraj, mdanalysis, rdkit, freesasa from conda-forge; fair-esm and torch
-    from PyPI as two separate pip calls (a combined call fails with WinError 5). Set os.environ["USERNAME"]
-    before importing parmed. conda/pip mix — if a compiled package breaks after a later conda op, suspect
-    the mix first.'
+    needs its own venv.
+
+    MEASURED 2026-10-17, so prefer these over arithmetic. torch a CUDA build works in the sandbox
+    ; OpenMM CUDA works and MD ran far faster than the CPU platform,
+    on a ~23k-atom solvated lysozyme under NPT with mixed precision. bf16 is several times fp32, so size models against bf16. Usable VRAM is ~6 GiB of the 8 GiB, the desktop holding
+    ~about a GiB — budget against 6.1, not 8. ESMC-300M/600M and esm3-sm-open-v1 in bf16 fit; esm3-sm in fp32
+    (~7.6 GiB with overhead) and ESMC-6B (~12 GiB) do not and must use the hosted client.
+
+    TWO FAILURES THAT RAISE NOTHING, both measured. OpenMM''s CUDA plugin fails with error 126 when the
+    pip nvidia-* runtime DLL directory is off the search path: it never registers and OpenMM quietly
+    serves OpenCL as if nothing were wrong, so import molecular-dynamics/scripts/select_platform.py
+    before openmm and read its notes for plugin load failures. And torch.cuda.OutOfMemoryError never
+    fires here: an oversized allocation was allocated while mem_get_info reported 0 free, because WDDM pages GPU
+    allocations into host RAM instead of failing. Throughput collapses instead — full speed near budget,
+    then far slower past it. So never rely on try/except OutOfMemoryError on this host, and
+    suspect memory pressure when a run is mysteriously slow rather than broken.
+
+    For folding, memory scales with chain length through activations rather than with checkpoint size,
+    so fold a protomer before a trimer and reduce chunk size before concluding a model does not fit.
+    Several structure stacks are Linux-first, but WSL2 does NOT help a skill running in this app: code
+    executes in a Windows sandbox whose granted roots do not include WSL. Confirm a Windows wheel
+    exists before promising a local route — jax-cuda*-plugin, flash-attn, triton and rapids-singlecell
+    have none, which blocks ColabFold/AlphaFold2, ESMFold2 fused kernels, scanpy GPU and torch.compile
+    for packaging reasons rather than VRAM ones. For a known protein, fetching the experimental
+    structure (PDB) or predicted model (AlphaFold DB) through the Structures & Interactions connector
+    still beats predicting one — it needs no GPU and remains the default route.
+
+    Use mixed precision for MD; consumer GeForce fp64 throughput makes double drastically slower.
+    Environment (struct): openmm, parmed, mdtraj, mdanalysis, rdkit, freesasa from conda-forge —
+    pdbfixer failed to build on this host and is optional. fair-esm and torch from PyPI as two separate
+    pip calls (a combined call fails with WinError 5). Host-side pip also refuses --index-url and the
+    name[extra] form, so those installs need pip invoked as a subprocess inside the sandbox.
+    LongPathsEnabled was set to 1 on this host in 2026-10, so the MAX_PATH failure that previously
+    required extracting wheels to a \\?\-prefixed target should no longer occur; a workspace-resident
+    venv still does not survive a sweep, so budget a reinstall. Set os.environ["USERNAME"] before
+    importing parmed. conda/pip mix — if a compiled package breaks after a later conda op, suspect the
+    mix first.'
   skills:
   - tamarind
   - esm

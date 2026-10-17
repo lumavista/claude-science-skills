@@ -65,7 +65,18 @@ client, or re-verify the pins in case a newer release widened them. Check
 `torch.__version__` and `sys.version` in the environment that will run the
 model rather than assuming pip resolved sensibly. Note also that the default
 PyPI torch wheel on Windows is CPU-only, so `torch.cuda.is_available()` being
-`False` is usually the wheel, not the hardware. On Windows with long paths
+`False` is usually the wheel, not the hardware.
+
+**Two Windows installation facts, measured 2026-10-17.** Host-side pip under
+Claude Science refuses both `--index-url` and the `name[extra]` form, so the
+CUDA torch install above has to run with pip invoked as a subprocess inside the
+sandbox. And a CUDA torch tree carries a 127-character member, so it needs
+either long-path support enabled or an environment root under ~114 characters;
+a per-session workspace root is already longer than that on its own, which is
+why a deep venv fails to install even after the wheel downloads cleanly.
+Separately, `torch.compile` is unavailable on native Windows — it needs Triton,
+which publishes no `win_amd64` wheel — so treat eager execution as the only
+local mode and do not plan a speedup around compilation. On Windows with long paths
 disabled (the default), torch's deepest wheel file sits 146 characters below
 the env root, so the venv root must be at most 113 characters — create it at a
 short path such as `C:\venvs\esm`, or enable `LongPathsEnabled`, rather than
