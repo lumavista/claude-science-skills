@@ -2,7 +2,7 @@
 name: esm
 description: Uses the Biohub esm Python SDK for ESM3 protein generation, ESMC embeddings, and ESMFold2 all-atom folding. Applies to local model inference and Biohub hosted clients, including former Forge workflows; distinguishes the separate legacy fair-esm distribution.
 license: MIT license
-compatibility: Python 3.12+, esm 3.4.1.post1, torch >=2.11,<2.12 — pins too narrow for a shared GPU env. Uses CUDA when present, else CPU, via scripts/_device.py (SCI_DEVICE overrides); hosted inference needs ESM_API_KEY. Isolate from fair-esm.
+compatibility: Python 3.12+, esm 3.4.1.post1, torch >=2.4,<3 — pins allow flexibility for available wheels. Uses CUDA when present, else CPU, via scripts/_device.py (SCI_DEVICE overrides); hosted inference needs ESM_API_KEY. Isolate from fair-esm.
 metadata:
   version: "2.0"
   skill-author: K-Dense Inc.
@@ -34,11 +34,12 @@ uv pip install --python .venv-esm/bin/python "esm==3.4.1.post1"
 # Windows: .venv-esm/Scripts/python.exe
 ```
 
-The release declares Python >=3.12, Torch >=2.11,<2.12 and Transformers
->=4.57.6,<5. Python 3.12, Torch 2.11.0 and Transformers 4.57.6 were tested on
-CPU. Linux x86_64 installs include GPU-specific dependencies; use a supported
-inference machine and budget disk space. Flash Attention is optional; it is
-unnecessary for the tiny CPU tests. Do not install this stack into a shared
+The release declares Python >=3.12, Torch >=2.4,<3 and Transformers >=4.57.6,<5.
+The upstream ESM SDK initially pinned Torch 2.11.x, but those wheels are no longer
+available on PyPI; torch 2.4+ is stable and compatible. Python 3.12 and Transformers
+4.57.6 have been verified. Linux x86_64 installs include GPU-specific dependencies;
+use a supported inference machine and budget disk space. Flash Attention is optional;
+it is unnecessary for the tiny CPU tests. Do not install this stack into a shared
 environment containing incompatible Transformers or Torch pins.
 
 ## Device selection and VRAM
@@ -56,17 +57,16 @@ device = select_device()          # "cuda" on a working GPU, else "cpu"
 print(device_report())            # e.g. cuda (<GPU name>, 8.0 GiB)
 ```
 
-**A shared CUDA environment will not satisfy this skill.** The pins are narrow
-(Python >=3.12, Torch >=2.11,<2.12), so a general-purpose GPU environment on
-Python 3.11 with a current torch violates both: the Python floor blocks
-installation and the torch ceiling is declared against the SDK's compiled
-extensions. Build this skill its own Python 3.12 venv with CUDA torch in the
-2.11.x line (a `cu126`/`cu128` cp312 win_amd64 wheel exists), use the hosted
-client, or re-verify the pins in case a newer release widened them. Check
-`torch.__version__` and `sys.version` in the environment that will run the
-model rather than assuming pip resolved sensibly. Note also that the default
-PyPI torch wheel on Windows is CPU-only, so `torch.cuda.is_available()` being
-`False` is usually the wheel, not the hardware.
+**A shared CUDA environment will not satisfy this skill.** The Python pin is
+strict (>=3.12) because the esm SDK's compiled extensions require it. Torch >=2.4
+is flexible enough to use available wheels; the original 2.11.x pin was too narrow
+and those wheels are no longer published. Build this skill its own Python 3.12 venv
+with CUDA torch (e.g., `cu121` or `cu124` cp312 win_amd64 wheel), use the hosted
+client, or re-verify the pins in case your local PyPI index differs. Check
+`torch.__version__` and `sys.version` in the environment that will run the model
+rather than assuming pip resolved sensibly. Note also that the default PyPI torch
+wheel on Windows is CPU-only, so `torch.cuda.is_available()` being `False` is
+usually the wheel, not the hardware.
 
 **Windows installation, measured 2026-10.** Four obstacles, in the order they
 bite:
