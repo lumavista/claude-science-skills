@@ -44,6 +44,8 @@ uv pip install "anndata[dask,lazy]==0.13.4"
 
 Use unpinned installs only when intentionally tracking the latest compatible release.
 
+This is a format and IO skill, so it is CPU-bound and disk-bound: the cost is HDF5/Zarr codecs and IO, not array math. GPU array backing for AnnData does exist, but it lives in rapids-singlecell, which belongs to the scanpy skill, and RAPIDS has no native Windows build.
+
 Current API notes:
 - Use `anndata.io` for non-native `read_*` and `write_*` helpers. Top-level `anndata.read_h5ad` and `anndata.read_zarr` remain supported.
 - Use `ad.concat`; `AnnData.concatenate()` was removed in 0.13. Avoid old `ad.read`, deprecated `AnnData.*_keys()` helpers and `anndata.__version__`; prefer explicit readers, mapping `.keys()`, and `importlib.metadata.version("anndata")`.

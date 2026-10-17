@@ -81,6 +81,13 @@ sc.pp.neighbors(adata, n_neighbors=10, n_pcs=40) # Compute neighborhood graph
 sc.pp.neighbors(adata, method='jaccard')         # Jaccard connectivities (scanpy 1.12)
 ```
 
+The bundled scripts route these two calls, plus `sc.tl.umap` and `sc.tl.leiden`,
+through `rapids_singlecell` (`rsc.pp.pca`, `rsc.pp.neighbors`, `rsc.tl.umap`,
+`rsc.tl.leiden`) when a CUDA device is usable, and through scanpy otherwise.
+The signatures mirror scanpy's, but `random_state` is spelled `rng` on current
+releases and the results are not bitwise equal. rapids-singlecell needs Linux
+or WSL2 (no native-Windows RAPIDS wheels). See the GPU section of `SKILL.md`.
+
 ### Batch Correction
 
 ```python

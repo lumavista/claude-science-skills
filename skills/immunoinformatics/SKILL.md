@@ -351,8 +351,11 @@ pending experimental validation.
   weights splits that a single licence field would misrepresent. Read it before
   wiring any tool into a pipeline intended for publication or product. Note it
   records NetMHCpan as 4.2e, superseding the 4.1 named below.
-- `references/compute-routes.md` — which steps run on CPU locally, which go to
-  Tamarind, and which free hosted routes exist when Tamarind does not fit.
+- `references/compute-routes.md` — which steps run on the local CPU, which use
+  the local GPU, and which exceed it and go to Tamarind or a free hosted route.
+  Epitope prediction and triage themselves are CPU work; the GPU tier is
+  folding, embedding, inverse folding and MD. Read it before assuming a step
+  needs the cloud: on an 8 GiB card most of this workflow is local.
 
 ## Official references
 

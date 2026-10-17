@@ -70,6 +70,11 @@ python scripts/run_deseq2_analysis.py \
   --min-counts 10 --alpha 0.05 --n-cpus 1 --plots --output results/
 ```
 
+Fitting is CPU-bound: PyDESeq2 fits per-gene GLMs through scipy/statsmodels and
+parallelises them with joblib, and no GPU DESeq2 equivalent exists in Python. The
+driver defaults `--n-cpus 1`; raising it toward the machine's core count is the
+entire available speedup.
+
 Use `--no-transpose` for a counts file already in samples × genes order. The driver
 rejects duplicate source CSV headers, unequal sample sets, invalid count values,
 zero-count samples, missing contrast annotations, and unidentifiable designs. It

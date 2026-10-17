@@ -1,84 +1,115 @@
-# Compute Routes Without a Local GPU
+# Compute Routes: Local GPU, Local CPU, and Hosted
 
-The Antigen-Structure and Immuno-Designer host notes record no GPU, no remote
-compute and no managed model endpoints. That does not block immunogen work,
-but it changes which steps run locally and which are handed off — and being
-explicit about which is which is the difference between a workflow that
-completes and one that stalls silently partway through.
+Immunogen work spans steps that are trivial on a laptop and steps that need a
+datacentre. Being explicit about which is which is the difference between a
+workflow that completes and one that stalls silently partway through.
 
-This collection already has one no-GPU answer: **Tamarind**, which runs
-folding, design and docking as cloud jobs. Tamarind is the right default when
-a job needs a GPU, because it is already wired in, schema-discoverable and
-covered by an existing skill. What this file adds is the free-notebook route
-for cases where Tamarind is not appropriate — no account or budget, a one-off
-check, or a model Tamarind does not expose.
+The reference host for this collection is a **Windows 11 workstation with an
+an 8 GiB consumer GPU** . That changes the routing advice this file used to give: folding,
+inverse folding and embedding are now local operations for proteins of ordinary
+size, and the cloud is for what does not fit rather than for everything.
 
-As SKILL.md and the specialist contracts both state: prefer the dedicated
-structure-prediction skills over Tamarind where they can run, and say which of
-the three conditions (cloud execution needed, no local GPU, batch size) applies
-before submitting.
+Verify before trusting. `nvidia-smi` reports the card and driver;
+`skills/esm/scripts/_device.py` reports what torch can actually reach. They
+disagree more often than people expect, and the usual cause is a CPU-only torch
+wheel, not a hardware fault.
+
+## The one rule that saves the most compute
+
+**Check whether the structure already exists before predicting it.** For a
+known antigen an experimental structure or an AlphaFold DB model usually
+exists, needs no GPU at all, and beats anything predicted fresh. Fetch it
+through the Structures & Interactions connector. This is the step most often
+skipped, and skipping it is the single most expensive mistake in the workflow.
 
 ## Three tiers
 
-**Tier 1 — runs locally on CPU, no caveat.** More of this workflow than people
-expect:
+**Tier 1 — CPU, no caveat.** More of this workflow than people expect. Putting
+these on a GPU buys nothing; most are bound by IO, branching or small matrices:
 
 - MHC class I and II prediction (MHCflurry, MHCnuggets, and the DTU tools if
-  licensed — all small networks, CPU by design)
+  licensed — small networks, CPU by design; a GPU is not the bottleneck at
+  typical peptide counts)
 - IEDB retrieval, self-similarity screening, population coverage prep
 - Alignment and conservation (`phylogenetics`, `conservation-mapping`)
-- Mosaic and cocktail design, junction checking (`mosaic_design.py`)
-- Sequence design and stability (ProteinMPNN, LigandMPNN, ThermoMPNN)
-- Glycan shield grafting (GlycoSHIELD — avoiding MD is its whole contribution)
+- Mosaic and cocktail design, junction checking (`mosaic_design.py`) — graph
+  search over a strain panel, not arithmetic
 - Relative solvent accessibility (freesasa, DSSP)
-- ESM-2 embeddings at the 8M–650M checkpoints
+- Glycan shield grafting (GlycoSHIELD — avoiding MD is its whole contribution)
 
-**Tier 2 — hand off to a hosted GPU.** Folding and refold validation. Tamarind
-first; free notebooks when Tamarind does not fit:
+**Tier 2 — local GPU, with CPU as a correct but slow fallback.** These are the
+steps that an 8 GiB card changes from "hand off" to "run here":
+
+| Step | Local route | 8 GiB notes |
+|---|---|---|
+| ESMC embeddings | `esm` skill, 300M/600M | comfortable; 6B does not fit |
+| ESM3 generation | `esm3-sm-open-v1` (1.4B) | fits in bf16 (~2.8 GiB), not fp32 |
+| Single-sequence folding | ESMFold-class | limited by chain length, not weights |
+| Inverse folding | ProteinMPNN / LigandMPNN | small models, fast |
+| Point-mutant stability | ThermoMPNN (`construct-assembly`) | small; CPU is viable too |
+| MD | OpenMM CUDA platform (`molecular-dynamics`) | use mixed precision |
+
+Reduced precision is the default worth taking: on Ampere and newer, bfloat16
+halves the weight footprint while keeping fp32's exponent range, so it needs no
+loss scaling. For folding specifically, memory scales with sequence length
+through the activations rather than with checkpoint size — so the limit reached
+first is chain length. Fold a protomer rather than a trimer and state that
+quaternary and trimer-interface epitopes are not covered by that model.
+
+**Tier 3 — exceeds 8 GiB, so hand off.** Tamarind first, because it is already
+wired in and schema-discoverable; free notebooks when Tamarind does not fit
+(no account or budget, a one-off check, or a model Tamarind does not expose):
 
 | Need | Route | Limits |
 |---|---|---|
-| Existing structure | Structures & Interactions connector (PDB / AlphaFold DB) | none — **always check this first** |
-| AF3-class, commercially usable | ColabFold `AlphaFold3_of3.ipynb` (OpenFold3) | free-tier GPU availability varies |
+| Existing structure | Structures & Interactions connector | none — check this first |
+| AF3-class, commercially usable | ColabFold `AlphaFold3_of3.ipynb` (OpenFold3) | free-tier GPU varies |
 | Structure + binding affinity | ColabFold `Boltz1.ipynb` | same |
-| AF2 monomer or complex | ColabFold `AlphaFold2_mmseqs2.ipynb` | ~2000 residues on 16GB |
-| Single-sequence triage | ColabFold `ESMFold.ipynb` | no MSA, lower accuracy |
+| AF2 monomer or complex | ColabFold `AlphaFold2_mmseqs2.ipynb` | ~2000 residues on 16 GiB |
 | Complexes, no setup | `lab.chaidiscovery.com` | web UI |
 | Non-commercial only | `alphafoldserver.com` | 30 jobs/day, 5000 tokens/job |
+| ESMC-6B embeddings | Biohub hosted client | ~12 GiB of weights; local is out |
+| RFdiffusion at scale | Tamarind | runs locally for modest sizes |
 
-The first row is the one that gets skipped. For a known antigen an
-experimental structure or an AlphaFold DB model usually exists, needs no GPU,
-and beats anything predicted fresh.
-
-**Tier 3 — genuinely needs a GPU.** RFdiffusion and variants, Genie2, Chroma.
-Tamarind runs RFdiffusion; the others have no hosted free route. Emit a job
-script and state the requirement rather than implying they can run locally.
+Say which of the three Tamarind conditions applies before submitting — cloud
+execution requested, insufficient local VRAM, or batch size. "This job does not
+fit in 8 GiB" is a measurable claim; "no local GPU" is no longer a true one.
 
 ## Constraints that bite
+
+**A CPU-only torch wheel.** The default PyPI `torch` on Windows has no CUDA.
+Everything will work and be slow, which is the hardest failure to notice.
+Install from the `download.pytorch.org/whl/cu###` index and assert
+`torch.cuda.is_available()` before a long run.
+
+**Windows versus WSL2.** Much of the structural-biology stack is Linux-first.
+ColabFold-style installs and the RAPIDS family in particular are far easier
+under WSL2, and some have no native Windows build at all. Confirm a Windows
+build exists before promising one; WSL2 still reaches the same physical GPU.
 
 **MMseqs2 server etiquette.** ColabFold's `--use_msa_server` is a shared public
 resource. Serial queries from one IP are permitted; parallelising across
 machines is explicitly discouraged. Forty designs is forty serial jobs — give
-the realistic wall-clock before starting, and consider single-sequence ESMFold
-for first-pass triage with only survivors going to MSA-based folding.
-
-**Colab free tier.** GPU assignment is luck-of-the-draw and sessions time out.
-Over roughly 2000 residues on a 16GB GPU will fail — a trimeric envelope
-glycoprotein exceeds that, so fold the protomer and state that quaternary and
-trimer-interface epitopes are not covered by that model.
+the realistic wall-clock before starting, and consider single-sequence folding
+for first-pass triage with only survivors going to MSA-based folding. A local
+GPU does not change this: the MSA server is the shared resource, not your card.
 
 **AlphaFold Server token cap.** 5000 tokens, where each ligand or glycan *atom*
-counts. A fully glycosylated trimer is not feasible; a single glycosylated
-domain is.
+counts. A fully glycosylated trimer is not feasible; a single domain is.
+
+**VRAM is shared with the desktop.** A display-attached 8 GiB card has several
+hundred MiB already spoken for by the compositor. Plan against free memory, not
+total, when a run is close to the limit.
 
 ## Ordering the work so folding is rare
 
-Folding is the bottleneck, so order every pipeline to fold as little as
-possible:
+A local GPU makes folding cheaper, not free. The ordering still holds, because
+the point was never purely cost — it is that cheap filters are better filters
+when applied first:
 
 1. Filter on sequence-level criteria first — conservation, predicted
    presentation, self-similarity, obvious liabilities. Free.
-2. Design sequences on CPU. Cheap.
+2. Design sequences on CPU or local GPU. Cheap.
 3. Rank on cheap proxies — MPNN score and confidence, ThermoMPNN ΔΔG. Cheap.
 4. Fold only the top N. Decide N explicitly and say why.
 5. **Fold a negative control alongside** — a design expected to fail.

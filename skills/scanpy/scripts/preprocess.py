@@ -7,6 +7,12 @@ object ready for dimensionality reduction. A copy of the raw counts is kept in
 ``adata.layers['counts']`` and the normalized log values in ``adata.raw`` so
 downstream marker/expression plots can use ``use_raw=True``.
 
+This stage stays on the CPU even when a GPU backend is available: normalization,
+HVG selection, regress_out and scaling all act on the full-gene matrix, which is
+the largest object in the workflow and the first thing to exhaust a consumer
+card's VRAM, and `.raw`/`layers["counts"]` must survive byte-for-byte. GPU
+acceleration starts at PCA in reduce_dimensions.py.
+
 Examples:
     python preprocess.py filtered.h5ad -o normalized.h5ad
     python preprocess.py filtered.h5ad -o normalized.h5ad --n-top-genes 3000 --scale

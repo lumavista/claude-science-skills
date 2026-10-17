@@ -142,7 +142,7 @@ specialists:
 
 
     Prefer the dedicated structure-prediction skills (AlphaFold2, Boltz, Chai-1, ESMFold2, OpenFold3,
-    ProteinMPNN, ESM-2) over Tamarind unless cloud execution, no local GPU, or batch size makes Tamarind
+    ProteinMPNN, ESM-2) over Tamarind unless cloud execution, insufficient local VRAM, or batch size makes Tamarind
     necessary — and say which applies before submitting.
 
 
@@ -412,23 +412,40 @@ specialists:
     adaptyv is the experimental step, not a substitute for one.
 
 
-    Prefer the dedicated structure-prediction skills over Tamarind unless cloud execution, no local GPU,
+    Prefer the dedicated structure-prediction skills over Tamarind unless cloud execution, insufficient local VRAM,
     or batch size makes Tamarind necessary — and say which applies before submitting.
 
 
     HOST NOTES — measured on one Windows machine; verify before trusting and delete this block if you
     move hosts.
 
-    No GPU, no remote compute connected, no managed model endpoints. The featured GPU model skills (AlphaFold2,
-    ESMFold2, Boltz, Chai-1, OpenFold3, ProteinMPNN) cannot run here — do not attempt them. For a known
-    protein, fetch its experimental structure (PDB) or predicted model (AlphaFold DB) through the Structures
-    & Interactions connector; that needs no GPU and is the default route to a structure. ESM-2 embeddings
-    run on CPU via the esm skill, fine for tens of sequences. For OpenMM, request the CPU platform explicitly
-    — the conda-forge build registers a CUDA platform even with no GPU, so never infer availability from
-    the platform list; it fails only on context creation. Environment (struct): openmm, pdbfixer, parmed,
-    mdtraj, mdanalysis, rdkit, freesasa from conda-forge; fair-esm and CPU torch from PyPI as two separate
-    pip calls (a combined call fails with WinError 5). Set os.environ["USERNAME"] before importing parmed.
-    conda/pip mix — if a compiled package breaks after a later conda op, suspect the mix first.'
+    an 8 GiB consumer GPU (nvidia-smi, 2026-10). GPU-capable work should use it;
+    CPU is the fallback, not the default. No remote compute connected and no managed model endpoints,
+    so anything exceeding 8 GiB goes to a hosted route rather than running here. Two workspace conda
+    envs, neither on the shell PATH — always invoke an interpreter by absolute path, because a bare
+    `python` call fails: %USERPROFILE%\.claude-science\conda\envs\python\python.exe is the default
+    CPU kernel (3.11, numpy/pandas/scipy/matplotlib) and ...\envs\gpu\python.exe (3.11) holds the CUDA
+    torch build. Put GPU work in the gpu env and leave the default env CPU-only, so a broken CUDA
+    install cannot take the default kernel down with it. The default PyPI torch wheel on Windows is
+    CPU-only: if torch.cuda.is_available() is False, suspect the wheel before the hardware, and install
+    the CUDA build from the download.pytorch.org cu### index. Check the env actually in use rather than
+    assuming — the gpu env is Python 3.11, so a skill requiring 3.12+ (esm does) cannot run there and
+    needs its own venv. 8 GiB is the binding
+    constraint — ESMC-300M/600M and esm3-sm-open-v1 fit in bf16, ESMC-6B (~12 GiB of weights alone) does
+    not and must use the hosted client. For folding, memory scales with chain length through activations
+    rather than with checkpoint size, so fold a protomer before a trimer and reduce chunk size before
+    concluding a model does not fit. Several structure stacks are Linux-first; prefer WSL2 for
+    ColabFold-style installs and confirm a Windows build exists before promising one. For a known protein,
+    fetching the experimental structure (PDB) or predicted model (AlphaFold DB) through the Structures
+    & Interactions connector still beats predicting one — it needs no GPU and remains the default route.
+    For OpenMM, never infer GPU availability from the registered platform list: the conda-forge build
+    registers a CUDA platform regardless of hardware and fails only on context creation, so verify by
+    actually creating a context and fall back to CPU when that throws. Use mixed precision on this card;
+    consumer GeForce fp64 throughput makes double precision drastically slower. Environment (struct):
+    openmm, pdbfixer, parmed, mdtraj, mdanalysis, rdkit, freesasa from conda-forge; fair-esm and torch
+    from PyPI as two separate pip calls (a combined call fails with WinError 5). Set os.environ["USERNAME"]
+    before importing parmed. conda/pip mix — if a compiled package breaks after a later conda op, suspect
+    the mix first.'
   skills:
   - tamarind
   - esm
