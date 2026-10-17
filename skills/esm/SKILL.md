@@ -75,12 +75,15 @@ Footprint below is arithmetic, not a published figure — parameters x bytes per
 parameter plus ~⅓ for activations and fragmentation, which is what
 `fits_in_vram()` applies. Neither Biohub nor EvolutionaryScale publishes
 per-checkpoint VRAM requirements, so confirm by running rather than trusting it.
+Budget against usable memory, not the card's spec: a display-attached 8 GiB card
+measured ~6 GiB free, which is why `fits_in_vram()` subtracts a reserve and
+why the fp32 row below is out rather than merely tight.
 
 | Checkpoint | Params | bf16 weights | On an 8 GiB card |
 | --- | --- | --- | --- |
 | `biohub/ESMC-300M` | 300M | ~0.6 GiB | comfortable |
 | `biohub/ESMC-600M` | 600M | ~1.2 GiB | comfortable |
-| `esm3-sm-open-v1` | 1.4B | ~2.8 GiB | fits in bf16; fp32 (~5.6 GiB) is tight |
+| `esm3-sm-open-v1` | 1.4B | ~2.8 GiB | fits in bf16; fp32 (~5.6 GiB) will not |
 | `biohub/ESMC-6B` | 6B | ~12 GiB | does not fit — use the hosted client |
 | `biohub/ESMFold2` | — | — | chain length binds, not weights; see below |
 

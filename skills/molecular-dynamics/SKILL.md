@@ -117,14 +117,12 @@ simulation = Simulation(modeller.topology, system, integrator,
 
 ### Constraints on an 8 GB consumer card (8 GiB consumer card)
 
-**Measured once, 2026-10-17**, so there is a reference point rather than only a
-method: ~23k-atom solvated lysozyme (1AKI, AMBER14/TIP3P-FB, 10 Å padding,
-0.15 M NaCl, PME, 2 fs, HBonds constrained), NPT at 300 K/1 bar,
-`Precision=mixed` — **a much higher rate on CUDA against 13.6 on the CPU platform, a
-23.6× speedup**, holding 300 K and 1.03 g/mL. That is ~157 ns overnight versus
-6.7 ns on the CPU. Still measure your own system with
-`StateDataReporter(..., speed=True)`: throughput scales with atom count, cutoff
-and PME grid, so this figure transfers only to systems of about this size.
+**One reference point, measured 2026-10-17:** ~23k-atom solvated lysozyme
+(1AKI, AMBER14/TIP3P-FB, PME, 2 fs, HBonds constrained), NPT at 300 K/1 bar,
+`Precision=mixed` — **more than an order of magnitude faster than the CPU platform**, or
+far more sampling overnight. Throughput scales with atom count, cutoff and PME
+grid, so measure your own system with `StateDataReporter(..., speed=True)` on an
+idle desktop; the same run during a large download reported a measurably lower rate.
 
 - **VRAM is rarely the MD bottleneck**: device state scales with atom count plus
   a PME grid, a small fraction of 8 GB for the 10^4–10^5-atom systems below, so
@@ -142,10 +140,8 @@ and PME grid, so this figure transfers only to systems of about this size.
   trip the ~2 s display watchdog and reset the context; ordinary steps are far
   shorter, but minimization on a very large system is the realistic exposure,
   and a run dying with a device reset points here.
-- **Driving the display from the same GPU** makes `speed=True` timings noisy: an
-  otherwise identical run taken during a 2 GB download reported a measurably lower rate with
-  a drifting speed column against 323 on a quiet machine. Benchmark on an idle
-  desktop and treat busy-desktop numbers as a lower bound.
+- **Driving the display from the same GPU** makes `speed=True` timings noisy, so
+  treat busy-desktop numbers as a lower bound.
 
 ## When to Use This Skill
 

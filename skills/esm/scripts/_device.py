@@ -85,7 +85,8 @@ def autocast_dtype(device: str | None = None):
 
 
 def fits_in_vram(params_billions: float, *, bytes_per_param: int = 2,
-                 overhead: float = 1.35, device: str | None = None) -> bool | None:
+                 overhead: float = 1.35, reserve_gb: float = 1.1,
+                 device: str | None = None) -> bool | None:
     """Rough check that a model of this size fits. None when memory is unknown.
 
     `overhead` covers activations, workspace and allocator fragmentation. This
@@ -100,12 +101,20 @@ def fits_in_vram(params_billions: float, *, bytes_per_param: int = 2,
     then collapsed once the budget was exceeded, an order-of-magnitude
     cliff with no exception to catch. So returning False here is a reason not to
     proceed, and `try/except OutOfMemoryError` is not a usable fallback on this
-    platform. Budget against roughly ~6 GiB of a display-attached 8 GiB card.
+    platform.
+
+    `reserve_gb` is subtracted from total memory because a display-attached card
+    does not offer all of it: the desktop compositor held ~1.1 GiB of the 8 GiB measured above, leaving ~6 GiB usable. Comparing against total would
+    approve a model that then lands in the cliff. Raise it when a browser or a
+    second process shares the card; set it to 0 only on a headless device.
     """
     total = vram_gb(device)
     if total is None:
         return None
-    return params_billions * bytes_per_param * overhead <= total
+    budget = total - max(reserve_gb, 0.0)
+    if budget <= 0:
+        return False
+    return params_billions * bytes_per_param * overhead <= budget
 
 
 def device_report(device: str | None = None) -> str:
