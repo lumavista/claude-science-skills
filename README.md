@@ -92,12 +92,24 @@ is merely slow, which is the hardest failure to notice. `torch.cuda.is_available
 returning `False` on this machine is almost always the wheel, not the hardware.
 Install from the `download.pytorch.org/whl/cu###` index.
 
-**rapids-singlecell has no native-Windows build.** RAPIDS supports Linux, or
-Windows 11 through WSL2; the RTX 4060 (compute capability 8.9) clears the
-hardware bar but native Windows does not clear the OS bar, so scanpy's GPU path
-simply never activates there and the CPU path runs. Worse on this platform,
-RAPIDS managed memory cannot oversubscribe VRAM under Windows or WSL, so an
-oversized run OOMs rather than spilling to host RAM — hence the skill's
+**On native Windows, wheel availability gates more than VRAM does.** This is the
+constraint that surprises people, because the card looks adequate and the
+failure is an install error rather than an out-of-memory:
+
+| Package | Windows wheel? | What it gates |
+|---|---|---|
+| `OpenMM-CUDA-12` / `-13` | **yes** | `molecular-dynamics` — works natively |
+| `cupy-cuda12x` | yes | CuPy arrays |
+| `rapids-singlecell` | **no** (sdist only) | `scanpy`'s GPU path |
+| `jax-cuda12/13-plugin` | **no** (manylinux only) | AlphaFold2/ColabFold — no CUDA JAX at all |
+| `flash-attn`, `deepspeed` | **no** (sdist only) | ESMFold2 fused kernels, scGPT, evo2 |
+| `triton` | **no** upstream | same (a community `triton-windows` fork exists) |
+
+So `scanpy`'s GPU path never activates on native Windows, and local folding is
+blocked for a platform reason rather than a memory one. WSL2 recovers the
+RAPIDS, JAX and Triton paths; it does not recover VRAM. One further Windows
+specific: RAPIDS managed memory cannot oversubscribe VRAM under Windows or WSL,
+so an oversized run OOMs rather than spilling to host RAM — hence scanpy's
 free-VRAM guard, which diverts a too-large matrix to the CPU instead.
 
 **8 GiB is the binding constraint, and it binds differently per workload.** For
