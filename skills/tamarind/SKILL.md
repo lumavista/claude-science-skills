@@ -1,13 +1,13 @@
 ---
 name: tamarind
-description: Runs de novo protein design, binder design, and antibody/nanobody design and developability on the Tamarind Bio platform via its REST API or MCP server, using RFdiffusion, BoltzGen, ProteinMPNN inverse folding, and developability panels — no local GPUs required. Use for design and optimization tasks that no local skill covers, for batch submission of many sequences, or whenever the user names Tamarind, tamarind.bio, app.tamarind.bio/api, or the x-api-key header. Do NOT use for plain structure prediction, docking, or embeddings when a dedicated local skill exists — prefer AlphaFold2, Boltz, Chai-1, ESMFold2, OpenFold3, ProteinMPNN, LigandMPNN, SolubleMPNN, DiffDock, or ESM-2 directly. Reach for Tamarind for those models only when the user asks for cloud execution, when the job exceeds the local GPU's memory, or when the batch is larger than local compute allows.
+description: Runs de novo protein design, binder design, antibody/nanobody design and developability on Tamarind Bio managed compute via REST or MCP (RFdiffusion, BoltzGen, ProteinMPNN). Use when the user names Tamarind, tamarind.bio or x-api-key, or when a job needs cloud execution, exceeds local VRAM, or batches beyond local compute; prefer local skills for plain folding, docking or embeddings.
 license: MIT
-compatibility: Requires Python 3.10+ and an API key sent as x-api-key. A Tamarind Bio account is the usual source of that key (app.tamarind.bio, Account / API settings, ten free jobs), but agents without a signup can provision a free trial key instead — see Access. Uses the `requests` library against the public REST API (these recipes use HTTP directly). Network access required. Optional MCP server at mcp.tamarind.bio/mcp for agent hosts.
+compatibility: Python 3.10+ and an API key sent as x-api-key. A Tamarind account is the usual source (app.tamarind.bio, Account / API settings, ten free jobs); agents without a signup can provision a trial key — see Access. Network access required. Optional MCP server at mcp.tamarind.bio/mcp.
 metadata:
   version: "1.3"
   last-reviewed: "2026-09-30"
   skill-author: Tamarind Bio
-  trigger-keywords: Tamarind, tamarind.bio, de novo design, binder design, antibody design, nanobody design, developability, RFdiffusion, BoltzGen, inverse folding, cloud GPU biology, exceeds local VRAM, batch structural characterization, x-api-key
+  trigger-keywords: Tamarind, tamarind.bio, de novo design, binder design, antibody design, nanobody design, developability, RFdiffusion, BoltzGen, cloud GPU biology, exceeds local VRAM, x-api-key
   openclaw:
     primaryEnv: TAMARIND_API_KEY
     envVars:
@@ -19,87 +19,72 @@ metadata:
 # Tamarind Bio
 
 Tamarind runs molecular-design and structural-biology tools on managed compute.
-Its full catalog is broad — structure prediction, design, docking, binding-affinity
-prediction, MSA generation, molecular dynamics — but this skill is scoped to the
-part of that catalog nothing else here covers.
+Its catalog is broad; this skill is scoped to the part nothing else here covers.
 
 ## Scope
 
-**Use Tamarind for:** de novo protein design (RFdiffusion, BoltzGen), binder
+**Use Tamarind for** de novo protein design (RFdiffusion, BoltzGen), binder
 design, antibody and nanobody design, developability panels, inverse folding at
 batch scale, and any job the user explicitly wants run on Tamarind's compute.
 
-**Do not use Tamarind for** plain structure prediction, docking, or protein
-embeddings when a dedicated skill is available. AlphaFold2, Boltz, Chai-1,
-ESMFold2, OpenFold3, ProteinMPNN, LigandMPNN, SolubleMPNN, DiffDock and ESM-2
-each have their own skill; those are the default path and should be preferred.
-Route such work to Tamarind only on one of three conditions: the user asks for
-cloud execution by name, the job exceeds the local GPU's memory, or the batch is
-larger than local compute can absorb. State which condition applies before
-submitting.
+**Do not use Tamarind for** plain structure prediction, docking or embeddings
+when a dedicated skill exists — AlphaFold2, Boltz, Chai-1, ESMFold2,
+OpenFold3, ProteinMPNN, LigandMPNN, SolubleMPNN, DiffDock and ESM-2 each have
+one, and those are the default path. Route such work here only on one of three
+conditions, stating which applies before submitting:
 
-The second condition is about capacity, not absence. A local GPU is usually
-present; what sends a job to Tamarind is a model or an input too large for its
-VRAM — on an 8 GiB card that means a checkpoint above roughly 3B parameters in
-bf16, or a long chain whose folding activations exceed the card regardless of
-checkpoint size. Check first and name the number, because "no local GPU" and
-"this job does not fit on the local GPU" are different claims and only the
-second is usually true.
+1. the user asks for cloud execution by name;
+2. the job exceeds the local GPU's memory;
+3. the batch is larger than local compute can absorb.
 
-For local sequence processing or molecular descriptors, use a local library.
+Condition 2 is about capacity, not absence: a local GPU is usually present, and
+what sends a job here is a model or input too large for its VRAM — on an 8 GiB
+card, a checkpoint above roughly 3B parameters in bf16, or a chain whose folding
+activations exceed the card regardless of checkpoint size. Check and name the
+number, because "no local GPU" and "this job does not fit" are different claims
+and only the second is usually true. Use a local library for sequence processing
+and molecular descriptors.
 
 ## Sources and review scope
 
-The REST contracts and public catalog were reviewed on **2026-09-30**. Examples are
-illustrative until validated against the user's account; this review did not run
-authenticated jobs or establish scientific accuracy for any model.
+REST contracts and the public catalog were reviewed on **2026-09-30**; no
+authenticated jobs were run and no model's scientific accuracy was established,
+so examples are illustrative until validated against the user's account.
 
-- [API index](https://app.tamarind.bio/llms.txt) and
-  [complete guide](https://app.tamarind.bio/llms-full.txt).
-- [Current OpenAPI](https://app.tamarind.bio/api/openapi.json) includes discovery,
-  validation, jobs, files, and newer pipeline/custom-tool surfaces.
-  [openapi.yaml](https://app.tamarind.bio/openapi.yaml) is also available. Check that
-  needed paths exist: the merged spec can return HTTP 200 with only its classic
-  surface when the backend spec cannot be fetched.
-- [Public catalog](https://app.tamarind.bio/tools.json) needs no key; query `?type=`
-  or `?tag=`. It documents public tools and conditional required settings, not
-  every optional parameter or account entitlement.
-- [Product documentation index](https://docs.tamarind.bio/llms.txt) links to
-  Markdown pages, including the [MCP guide](https://docs.tamarind.bio/tamarind/mcp-server.md).
+Fetch the account's current schemas before composing a run. Where the prose
+guide and OpenAPI differ, prefer the operation/schema for field shapes and
+record any unresolved difference rather than guessing.
+Sources: [API index](https://app.tamarind.bio/llms.txt),
+[full guide](https://app.tamarind.bio/llms-full.txt),
+[product docs](https://docs.tamarind.bio/llms.txt),
+[MCP guide](https://docs.tamarind.bio/tamarind/mcp-server.md),
+[OpenAPI](https://app.tamarind.bio/api/openapi.json) and
+[public catalog](https://app.tamarind.bio/tools.json).
 
-Fetch the account's current schemas before composing a run. Where the prose guide
-and OpenAPI differ, prefer the operation/schema for field shapes, and record any
-unresolved difference rather than guessing.
+Two traps: the merged OpenAPI spec can return HTTP 200 carrying only its classic
+surface when the backend spec cannot be fetched, so confirm the paths you need
+exist; and `tools.json` (no key needed, queried with `?type=` or `?tag=`)
+documents public tools and conditional required settings, not every optional
+parameter or account entitlement.
 
 ## Access
 
-1. Use the user's Tamarind deployment. The shared base is
-   `https://app.tamarind.bio/api`; a dedicated organization deployment has its own
-   host and account data. Every relative REST path below is under `/api`.
-2. Obtain a key from the deployment's API settings and read it from
-   `TAMARIND_API_KEY`; send it as `x-api-key`. Keep keys out of files and logs.
-   Signing in at `app.tamarind.bio` and generating a key under Account / API
-   settings is the normal route, and each user gets ten free jobs.
-3. Check the account's current allowance and compute budget before scaling up.
-   Free usage is a monthly allowance, not an unconditional promise of ten jobs
-   forever; billing and entitlements can change.
+The shared base is `https://app.tamarind.bio/api` and every relative path below
+sits under `/api`; a dedicated organization deployment has its own host and
+account data. Read the key from `TAMARIND_API_KEY`, send it as `x-api-key`, and
+keep keys out of files and logs. Check the account's allowance and compute
+budget before scaling up — free usage is a monthly allowance, not an
+unconditional promise of ten jobs forever.
 
-**Agent provisioning without an account.** Tamarind documents a second route
-for agents with no signup: a single `POST` to
-`https://app.tamarind.bio/api/agent/provision` returns a free trial key. That
-is useful precisely because it removes the credential gap that otherwise makes
-this skill unreachable, and it is the fastest way to test whether a routed job
-works at all.
-
-Treat it as a decision for the user, not a step to take unprompted. It creates
-an account-like credential and consumes a free trial tied to this machine, so
-ask before calling it, then store the result in `TAMARIND_API_KEY` rather than
-writing it into a file. It is also a trial: ten jobs is enough to validate a
-route, not to run a design campaign, so do not plan a batch around it without
-saying that the allowance is the binding limit. This endpoint is recorded from
-Tamarind's own instructions and has not been exercised from this repo — treat a
-non-2xx response as "the documented route changed", not as a bug in your
-request.
+**Agent provisioning without an account.** A single `POST` to
+`https://app.tamarind.bio/api/agent/provision` returns a free trial key,
+removing the credential gap that otherwise makes this skill unreachable. Ask the
+user before calling it, since it creates an account-like credential tied to this
+machine, then store the result in `TAMARIND_API_KEY` rather than a file. It is a
+ten-job trial — enough to validate a route, not to run a campaign — so say so
+rather than planning a batch around it. The endpoint is recorded from Tamarind's
+own instructions and has not been exercised from this repo, so treat a non-2xx
+response as "the documented route changed", not a bug in your request.
 
 ```bash
 # Public discovery requires no credential.
@@ -109,145 +94,109 @@ curl --fail-with-body 'https://app.tamarind.bio/api/tools' \
   -H "x-api-key: $TAMARIND_API_KEY"
 ```
 
-For REST examples install `requests` in the execution environment. The official
-CLI distribution is **`tamarind-cli`**, and its Custom Tools Python client imports
-as `from tamarind import Tamarind`; the unrelated package named `tamarind` is not
-this client. See the [SDK reference](https://app.tamarind.bio/api-docs/custom-tools-sdk-reference).
-Core job recipes below use HTTP directly.
+Install `requests` for REST examples. The official CLI is **`tamarind-cli`** and
+its Custom Tools Python client imports as `from tamarind import Tamarind`; the
+unrelated PyPI package named `tamarind` is not this client. See the
+[SDK reference](https://app.tamarind.bio/api-docs/custom-tools-sdk-reference).
 
 ## Workflow
 
-1. **Discover.** Read `GET /tools` and match the user's scientific task to the tool
-   description. Built-ins return an array; `?custom=true` lists legacy custom
-   tools only. Current custom deployments can be missing from this list: use the
-   known deployed name and its schema before concluding that it is unavailable.
-2. **Read the schema.** `GET /tools/{name}/schema` returns a JSON Schema for the
-   `settings` object. `GET /tools` also supplies a trimmed `settings` parameter
-   list. Check task-dependent fields, file extensions, list values, and defaults.
-3. **Validate.** Send `POST /validate-job` with `type`, `settings`, and optional
-   `jobName`. Check HTTP status first, then JSON `valid`. On success, inspect and
-   use `normalized` as the settings to submit. Address `unrecognized_settings`
-   if returned, even alongside `valid: true`: an optional-field typo can otherwise
-   silently leave the default in effect. Validation checks fields, not all submit
-   policies, queue limits, or deployment readiness.
-4. **Submit once.** `POST /submit-job` takes `jobName`, `type`, `settings`, optional
-   `version` for a custom-tool build, and optional/organization-required
-   `projectTag`. Persist the submitted name and settings. A successful response
-   is plain text, not a JSON receipt. Use the returned stored name.
-5. **Poll.** `GET /jobs?jobName=...` returns a row directly. Single-job terminal
-   states are `Complete`, `Stopped`, and `Failed`; handle legacy `Deleted` or an
-   exact-lookup error without looping indefinitely. Poll batch parents using
-   `batchStatus`, and poll newer pipelines on their own run endpoint.
-6. **Download and inspect.** `POST /result` returns a JSON string URL on **200**,
-   or **202** with `status: "preparing"`. Retry result retrieval after 202, without
-   resubmitting compute. GET the signed URL without the Tamarind API-key header.
-   Download the archive only for successful runs; request `fileName: "output.log"`
-   for stopped/failed jobs. Verify the scientific outputs after downloading.
+`GET /tools` → `GET /tools/{name}/schema` → `POST /validate-job` →
+`POST /submit-job` → `GET /jobs?jobName=...` → `POST /result`. Field shapes,
+required fields and pagination are in
+[API reference](references/api_reference.md);
+[workflow recipes](references/workflows.md) implement the whole sequence and are
+smoke-tested against simulated responses, with authenticated execution untested.
 
-[Workflow recipes](references/workflows.md) implement validation, stored names,
-bounded polling, 202 handling, batch validation, and pagination. They are locally
-smoke-tested with simulated responses; authenticated execution remains untested.
+The non-obvious parts:
+
+- **Discovery is incomplete** — a current custom deployment can be missing from
+  `GET /tools`, so use its known name and schema before calling it unavailable.
+- **Validation** checks fields only, not submit policies, queue limits or
+  deployment readiness. Check HTTP status before JSON `valid`, submit the
+  returned `normalized` settings, and address `unrecognized_settings` even
+  alongside `valid: true` — an optional-field typo otherwise silently leaves the
+  default in effect.
+- **Submit once**, persisting the name and settings; the response is plain text,
+  not a JSON receipt, and its stored name is the one to use.
+- **Terminal states** are `Complete`, `Stopped`, `Failed` — handle legacy
+  `Deleted` or an exact-lookup error without looping indefinitely.
+- **`POST /result`** answers **200** with a URL or **202** `preparing`; retry
+  after 202 without resubmitting compute, GET the signed URL without the
+  API-key header, fetch archives only for successful runs and
+  `fileName: "output.log"` for failed ones, then verify the outputs.
 
 ## Picking tools and interpreting results
 
-Select by inputs, intended output, and modeling assumptions, then confirm the
-candidate in the live catalog. These are anchors, not a guaranteed catalog:
+Select by inputs, intended output and modeling assumptions, then confirm the
+candidate in the live catalog — [tool catalog](references/tool_catalog.md) and
+[examples](references/examples.md) carry per-tool settings and caveats. Usual
+anchors: structure and cofolding (`alphafold`, `boltz`, `chai`, `protenix`,
+`esmfold`, `esmfold2`), binder and motif design (`bindcraft`, `boltzgen`,
+`rfdiffusion`), inverse folding (`proteinmpnn`, `ligandmpnn`), docking
+(`autodock-vina`, `diffdock`); antibody, developability, MSA and MD tools differ
+enough in inputs that their schemas must be read individually.
 
-| Task | Candidates and decisions |
-|---|---|
-| Protein/complex structure | `alphafold` for AF2 monomers/multimers; `boltz`, `chai`, or `protenix` for cofolding including ligands/nucleic acids; `esmfold` for fast single-sequence protein folding. Check `esmfold2` separately: its current catalog includes protein, DNA, RNA, and ligand complexes. |
-| Binder/motif design | `bindcraft`, `boltzgen`, `rfdiffusion`; choose by target type, scaffold constraints, and required structure inputs. |
-| Inverse folding | `proteinmpnn`/`ligandmpnn` consume structures and design sequences. Re-fold designs and compare to the intended backbone/interface. |
-| Small-molecule docking | `autodock-vina` for a fixed receptor and search box; `diffdock` for diffusion docking; `boltz`/`chai` for cofolding. Choose the modeling approach for the task, not to avoid supplying a required input. |
-| Antibody/developability/MSA/MD | Filter descriptions and schemas for the specific task; availability and inputs differ by tool. |
-
-Confidence scores describe model confidence, not experimental binding, specificity,
-or affinity. Compare designed backbones, interfaces, clashes, chain/residue mapping,
-and developability. Check ligand chemistry and stereochemistry; docking scores
-are not interchangeable with measured binding free energies. Record tool/model,
-input provenance, chain mapping, seeds/samples, MSA/template choices, normalized
-settings, and any user-selected filtering thresholds.
-
-Honor the user's selected tool and budget. Use authorized defaults for routine
-choices; surface unresolved choices that materially affect the scientific task or
-compute scope before a large campaign. Never silently substitute a different
-scientific task because its inputs are easier to supply.
+Confidence scores describe model confidence, not experimental binding,
+specificity or affinity, and docking scores are not interchangeable with
+measured binding free energies. Re-fold designed sequences and compare
+backbones, interfaces, clashes and chain/residue mapping, and check ligand
+chemistry and stereochemistry. Record tool/model, input provenance, chain
+mapping, seeds/samples, MSA/template choices, normalized settings and any
+user-selected thresholds. Use authorized defaults routinely but surface
+unresolved choices that materially affect the scientific task or compute scope
+before a large campaign, and never silently substitute a different task because
+its inputs are easier to supply.
 
 ## File inputs and chaining
 
-- Upload a structure with `PUT /upload/{filename}` (binary body; follow the
-  documented redirect), then reference the registered relative name, e.g.
-  `target.pdb` or `inputs/target.pdb` when `?folder=inputs` was used.
-- Confirm names using `GET /files`; it returns a non-paginated array for the
-  selected folder, not a list of a job's outputs.
-- Prefer these paths over inline file content. The current guide says redundant
-  account-email prefixes are stripped; there is no longer a universal
-  double-prefix failure. Arbitrary strings are not necessarily file references.
-- Reuse a completed job's file as `JobName/path/to/file.ext`, matching the next
-  parameter's supported extensions and list/scalar shape. Do not guess filenames.
-- ProteinMPNN designs must feed a folding tool's **sequence** field. A structural
-  template field does not mean "fold this designed sequence". Read generated
-  FASTA/CSV sequences and validate one folding settings object per sequence.
-- Do not author internal fields such as `submit_method`, `msa`, or `monomer_msa`.
+Upload with `PUT /upload/{filename}`, reference the registered relative name,
+and confirm it with `GET /files`; prefer these paths over inline content, and
+reuse a completed job's file as `JobName/path/to/file.ext` matching the next
+parameter's supported extensions and list/scalar shape. Do not guess filenames,
+and do not author internal fields such as `submit_method`, `msa` or
+`monomer_msa`.
+
+**ProteinMPNN designs must feed a folding tool's `sequence` field.** A
+structural template field does not mean "fold this designed sequence" — read the
+generated FASTA/CSV and validate one folding settings object per sequence.
 
 ## Batches and pipelines
 
-`POST /submit-batch` accepts one `type`, a nonempty `settings` array, `batchName`,
-and optional parallel `jobNames`. Validate **every** row using array-mode
-`/validate-job` (up to 1,000 rows per call), and use each row's normalized settings.
-Submission allows up to **30,000 expanded jobs**, counting design fan-out, and
-has a separate approximately **4.5 MB** request limit. Split on both constraints.
-Do not assume old `weightedHoursBudget`, `maxRuntimeSeconds`, or `gpuType` request
-fields enforce a cap: they are absent from the current batch schema. Use confirmed
-account controls and an agreed job/sample count.
+Validate **every** `POST /submit-batch` row with array-mode `/validate-job` (up
+to 1,000 rows per call) and submit each row's normalized settings. Hard limits
+are **30,000 expanded jobs** (counting design fan-out) and roughly **4.5 MB**
+per request — split on both. `weightedHoursBudget`, `maxRuntimeSeconds` and
+`gpuType` are absent from the current batch schema and enforce no cap, so rely
+on confirmed account controls and an agreed job count.
 
-Poll `GET /jobs?jobName=<batchName>` until `batchStatus` is `Complete`, `Stopped`,
-or `AggregationFailed`. Subjobs can finish before aggregation. Fetch the archive
-through `/result` and handle 202; `resultUrl` is optional and is not a reliable
-readiness signal. Page `GET /jobs?batch=...` using `startKey` to inspect children.
-
-For new saved workflows use the template/run API under `/pipelines`: read the
-current pipeline graph contract, validate the proposed run with
-`POST /pipelines/validate`, submit with `POST /pipelines/submit` (required
-`name`, `bindings`, and one of `templateId`/`pipeline`), and poll
-`GET /pipelines/runs/{run_id}`. Its statuses are lowercase and separate from job
-statuses. The legacy `/submit-pipeline` and `/run-pipeline` remain documented;
-[API reference](references/api_reference.md) gives their actual required fields.
+Poll the batch parent until `batchStatus` is `Complete`, `Stopped` or
+`AggregationFailed`; subjobs can finish before aggregation, and `resultUrl` is
+not a reliable readiness signal. New saved workflows use `/pipelines`, whose
+statuses are lowercase and separate from job statuses, while legacy
+`/submit-pipeline` and `/run-pipeline` remain documented — field shapes,
+children pagination and the pipeline boundary are in the API reference.
 
 ## MCP alternative
 
-Connect to `https://mcp.tamarind.bio/mcp` with OAuth 2.1 or the `x-api-key` header.
-The official guide confirms `submitJob`, `submitBatch`, `getJobs`, `getResult`,
-`uploadFile`, and `getFiles`. Read the connected server's `tools/list` schemas
-before using signatures or interpreting result envelopes.
-
-If the connection advertises discovery/validation helpers such as
-`getAvailableTools`, `getJobSchema`, or `validateJob`, use their current schemas.
-Extra helpers, filter vocabularies, `submitBatch(fromJob=...)`, and upload-through-
-MCP variants are not guaranteed by the public guide. This review's anonymous
-`tools/list` request returned 401, so their current contracts were not verified.
-Use the documented REST equivalents when needed.
+Connect to `https://mcp.tamarind.bio/mcp` with OAuth 2.1 or `x-api-key`. The
+official guide confirms `submitJob`, `submitBatch`, `getJobs`, `getResult`,
+`uploadFile` and `getFiles`; read the connected server's `tools/list` schemas
+before using signatures or interpreting result envelopes. Discovery and
+validation helpers, filter vocabularies, `submitBatch(fromJob=...)` and
+upload-through-MCP are unverified — not guaranteed by the public guide, and this
+review's anonymous `tools/list` returned 401 — so use the REST equivalents.
 
 ## Recovery
 
-HTTP auth failures differ by route: classic endpoints can answer **400**, jobs
-can answer **401** or gateway **403**, and usage can answer **401**. A 403 is not
-proof of a budget error. Check status and the actual response body before changing
-settings. Submission errors may be JSON or plain text regardless of Content-Type.
+Auth failures differ by route (classic endpoints **400**, jobs **401** or
+gateway **403**, usage **401**), so a 403 is not proof of a budget error — check
+status and the actual body before changing settings, and expect errors as JSON
+or plain text regardless of Content-Type.
 
-A timeout/5xx on submit does not prove that nothing queued. Look up the persisted
-name before retrying; for campaigns use `POST /jobs/search` with up to 1,000 names
-per request. Respect rate limits and avoid one-request-per-job polling at scale.
-A 413 rejects the oversized request before creating jobs; split the body or upload
-file content separately. `DELETE /delete-job` is a **soft delete**: it hides the
-job and leaves stored result files intact.
-
-## Reference files
-
-- [API reference](references/api_reference.md): endpoint shapes, validation,
-  pagination, authentication differences, and legacy/new pipeline boundaries.
-- [Tool catalog](references/tool_catalog.md): schema interpretation and discovery.
-- [Examples](references/examples.md): current catalog-backed settings examples
-  and tool-specific caveats, explicitly bounded by verification scope.
-- [Workflows](references/workflows.md): executable HTTP recipes with local mocked
-  verification; no authenticated scientific jobs were run for this review.
+**A timeout or 5xx on submit does not prove nothing queued**: look up the
+persisted name before retrying, using `POST /jobs/search` (up to 1,000 names)
+for campaigns. Respect rate limits and avoid one-request-per-job polling at
+scale. A 413 rejects the request before creating jobs, so split the body or
+upload file content separately. `DELETE /delete-job` is a **soft delete** — it
+hides the job and leaves stored result files intact.

@@ -22,12 +22,24 @@ Limits worth knowing before trusting a pass:
   caught in-process by any Python code; if that happens, set SCI_PLATFORM=CPU.
 - A tiny system passing says the platform runs, not that a large system fits in
   VRAM, and says nothing about throughput.
+- A GPU plugin that fails to *load* is never registered, so verification never
+  sees it. Its load error is copied into `notes` instead, so a CUDA build that
+  quietly became OpenCL is still visible to the caller.
+
+Windows: the pip CUDA runtime wheels (`nvidia-*`, notably the CUDA 13 layout
+under `site-packages/nvidia/cu13/bin/x86_64`) are not on the DLL search path,
+so the CUDA plugin fails with error 126 and OpenMM drops to OpenCL. Importing
+this module puts those directories on the search path, which only helps if it
+happens before the first `import openmm` in the process -- OpenMM loads its
+plugins at import time. Import this module first.
 """
 
 from __future__ import annotations
 
 import math
 import os
+import sys
+import sysconfig
 from dataclasses import dataclass, field
 
 __all__ = [
@@ -38,6 +50,8 @@ __all__ = [
     "platform_properties",
     "get_platform",
     "registered_platforms",
+    "plugin_load_failures",
+    "prepare_cuda_runtime",
     "platform_report",
 ]
 
@@ -51,6 +65,58 @@ _PRECISION_PLATFORMS = frozenset({"CUDA", "OpenCL", "HIP"})
 # Canonical spellings used when OpenMM is not importable and nothing can be
 # matched against the live registry. OpenMM platform names are case sensitive.
 _KNOWN_NAMES = ("CUDA", "OpenCL", "HIP", "CPU", "Reference")
+
+# Handles from os.add_dll_directory; a directory leaves the search path when
+# its handle is closed, so they are kept for the life of the process.
+_DLL_DIR_HANDLES: list = []
+
+
+def _cuda_runtime_dirs(roots) -> list[str]:
+    """Directories under `<root>/nvidia` that contain DLLs, shallowest first."""
+    found = []
+    for root in roots:
+        base = os.path.join(root, "nvidia")
+        if not os.path.isdir(base):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(base):
+            if any(name.lower().endswith(".dll") for name in filenames):
+                found.append(os.path.normpath(dirpath))
+    return sorted(set(found), key=lambda d: (d.count(os.sep), d))
+
+
+def prepare_cuda_runtime(roots=None) -> tuple[str, ...]:
+    """Put pip-installed CUDA runtime DLLs on the Windows DLL search path.
+
+    No-op off Windows. Returns every runtime directory found, whether or not it
+    was already on PATH. Both mechanisms are used
+    because OpenMM loads its plugins with plain LoadLibrary, which reads PATH,
+    while Python extension modules honor os.add_dll_directory. Never raises.
+    """
+    if os.name != "nt":
+        return ()
+    if roots is None:
+        paths = sysconfig.get_paths()
+        roots = {paths.get("purelib"), paths.get("platlib")} - {None}
+    try:
+        dirs = _cuda_runtime_dirs(roots)
+    except OSError:
+        return ()
+    current = os.environ.get("PATH", "").split(os.pathsep)
+    added = [d for d in dirs if d not in current]
+    if added:
+        os.environ["PATH"] = os.pathsep.join(added + current)
+    for d in dirs:
+        try:
+            _DLL_DIR_HANDLES.append(os.add_dll_directory(d))
+        except (AttributeError, OSError):
+            pass
+    return tuple(dirs)
+
+
+# Recorded before prepare_cuda_runtime runs: if openmm is already imported, its
+# plugins have already failed or succeeded and the DLL path cannot help.
+_OPENMM_IMPORTED_FIRST = "openmm" in sys.modules
+_CUDA_RUNTIME_DIRS = prepare_cuda_runtime()
 
 
 @dataclass(frozen=True)
@@ -103,6 +169,33 @@ def registered_platforms() -> tuple[str, ...]:
         return tuple(p.getName() for p in platforms)
     except Exception:
         return ()
+
+
+def plugin_load_failures() -> tuple[str, ...]:
+    """OpenMM's own record of plugin libraries that failed to load.
+
+    A failed plugin never registers, so this is the only place a broken CUDA
+    install shows up. Empty when OpenMM is missing or reports nothing.
+    """
+    try:
+        import openmm as mm
+
+        return tuple(str(f) for f in mm.Platform.getPluginLoadFailures())
+    except Exception:
+        return ()
+
+
+def _load_notes() -> list[str]:
+    """Notes explaining plugins that never registered, for PlatformChoice.notes."""
+    notes = [f"plugin failed to load: {f}" for f in plugin_load_failures()]
+    if notes and os.name == "nt":
+        if _OPENMM_IMPORTED_FIRST:
+            notes.append("openmm was imported before select_platform, so the CUDA "
+                         "runtime DLL path was not prepared; import select_platform first")
+        elif not _CUDA_RUNTIME_DIRS:
+            notes.append("no pip CUDA runtime DLLs found under site-packages/nvidia; "
+                         "install the openmm[cuda12] or openmm[cuda13] extra")
+    return notes
 
 
 def _canonical_name(requested: str) -> str:
@@ -269,16 +362,12 @@ def select_platform(prefer: str | None = None, *, precision: str | None = None,
         )
 
     available = registered_platforms()
+    notes: list[str] = _load_notes()
     if not available:
-        return PlatformChoice(
-            name="CPU",
-            properties={},
-            verified=False,
-            notes=("OpenMM not importable or no platform registered; "
-                   "reporting CPU without verification",),
-        )
+        notes.append("OpenMM not importable or no platform registered; "
+                     "reporting CPU without verification")
+        return PlatformChoice(name="CPU", properties={}, verified=False, notes=tuple(notes))
 
-    notes: list[str] = []
     candidates = [n for n in PLATFORM_PREFERENCE if n in available]
     candidates += [n for n in available if n not in PLATFORM_PREFERENCE]
     for name in candidates:
@@ -320,16 +409,16 @@ def _main() -> None:
         import openmm as mm
 
         print(f"OpenMM version: {mm.Platform.getOpenMMVersion()}")
-        failures = mm.Platform.getPluginLoadFailures()
-        for failure in failures:
-            print(f"  plugin load failure: {failure}")
     except ImportError as err:
         print(f"OpenMM not installed ({err}).")
         print("Install a CUDA-enabled build; see the skill's SKILL.md.")
 
+    if _CUDA_RUNTIME_DIRS:
+        print(f"CUDA runtime DLL directories on the search path: {', '.join(_CUDA_RUNTIME_DIRS)}")
     registered = registered_platforms()
     print(f"Registered platforms (by reported speed): {', '.join(registered) or 'none'}")
     print("  Registration means the plugin loaded, not that the device works.")
+    print("  Plugin load failures, if any, are listed under the selection notes.")
 
     choice = select_platform()
     print()
