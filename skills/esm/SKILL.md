@@ -82,9 +82,16 @@ bite:
   installed with plain pip at workspace depth. A short root outside the
   workspace is **not** an alternative — the sandbox cannot reach paths like
   `C:\venvs\esm` — so without long paths, use the hosted client.
-- If `huggingface_hub` raises `WinError 1314` creating symlinks, set
-  `HF_HUB_DISABLE_SYMLINKS=1`; it did not recur on a later run, so set it only
-  when the error appears.
+- If `huggingface_hub` raises `WinError 1314` creating symlinks (measured
+  2026-10), the environment variable `HF_HUB_DISABLE_SYMLINKS` does not exist in
+  the installed hub (versions tested: 1.32.0); `HF_HUB_DISABLE_SYMLINKS_WARNING`
+  silences the warning only, not the crash. Root cause: `are_symlinks_supported()`
+  memoizes True per-directory, and a parallel multi-file fetch races another
+  thread's call to `os.symlink()`, which raises `OSError 1314` on Windows without
+  Developer Mode (not the `PermissionError` the hub's error handler catches).
+  Workarounds: (a) prime the cache serially with
+  `snapshot_download("biohub/ESMC-300M", max_workers=1)` so files land as real
+  copies, or (b) enable Windows Developer Mode or run as administrator.
 - `USERNAME` is unset in the sandbox, so `getpass.getuser()` fails and
   `torch._inductor` raises `ModuleNotFoundError: 'pwd'` — during an ordinary
   eager `from_pretrained`, not only under `torch.compile`. Set
