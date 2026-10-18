@@ -474,7 +474,7 @@ specialists:
     os.environ["USERNAME"] set before import, and torch._inductor raises ModuleNotFoundError ''pwd''
     unless TORCHINDUCTOR_CACHE_DIR is set. Treat it as one defect with two symptoms. huggingface_hub
     also raises WinError 1314 creating symlinks (measured 2026-10): HF_HUB_DISABLE_SYMLINKS does not
-    exist in installed versions (1.32.0+); only HF_HUB_DISABLE_SYMLINKS_WARNING exists and only silences
+    exist in installed versions (measured: 0.36.2); only HF_HUB_DISABLE_SYMLINKS_WARNING exists and only silences
     the warning. Use serial download with snapshot_download(..., max_workers=1) or enable Developer Mode.
     conda/pip mix — if a compiled package breaks after a later conda op, suspect the mix first.'
   skills:

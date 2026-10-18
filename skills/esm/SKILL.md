@@ -2,7 +2,7 @@
 name: esm
 description: Uses the Biohub esm Python SDK for ESM3 protein generation, ESMC embeddings, and ESMFold2 all-atom folding. Applies to local model inference and Biohub hosted clients, including former Forge workflows; distinguishes the separate legacy fair-esm distribution.
 license: MIT license
-compatibility: Python 3.12+, esm 3.4.1.post1, torch >=2.4,<3 — pins allow flexibility for available wheels. Uses CUDA when present, else CPU, via scripts/_device.py (SCI_DEVICE overrides); hosted inference needs ESM_API_KEY. Isolate from fair-esm.
+compatibility: Python 3.12+, esm 3.4.1.post1, torch >=2.11.0,<2.12.0 — the SDK's own declared range, so 2.11.x is the only permitted minor. On Windows the CUDA build needs the cu128 index. Uses CUDA when present, else CPU, via scripts/_device.py (SCI_DEVICE overrides); hosted inference needs ESM_API_KEY. Isolate from fair-esm.
 metadata:
   version: "2.0"
   skill-author: K-Dense Inc.
@@ -34,13 +34,41 @@ uv pip install --python .venv-esm/bin/python "esm==3.4.1.post1"
 # Windows: .venv-esm/Scripts/python.exe
 ```
 
-The release declares Python >=3.12, Torch >=2.4,<3 and Transformers >=4.57.6,<5.
-The upstream ESM SDK initially pinned Torch 2.11.x, but those wheels are no longer
-available on PyPI; torch 2.4+ is stable and compatible. Python 3.12 and Transformers
-4.57.6 have been verified. Linux x86_64 installs include GPU-specific dependencies;
+The release declares Python >=3.12, `torch>=2.11.0,<2.12.0` and
+`transformers>=4.57.6,<5.0.0`. **The torch range admits only 2.11.x**, which
+constrains the CUDA wheel you may install:
+
+```bash
+pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+```
+
+The `cu128` index is required. `cu124` caps at torch 2.6.0 and `cu121` lower
+still, so neither can satisfy the SDK — a cu124 install either resolves to a
+version esm rejects or silently leaves the CPU-only wheel in place. The plain
+PyPI wheel (`pip install torch==2.11.0`) is CPU-only on Windows and installs
+without complaint, so check `torch.version.cuda is not None` rather than
+assuming the install gave you a CUDA build; `scripts/_env_check.py` does this
+for you. Python 3.12 and Transformers 4.57.6 have been verified.
+Linux x86_64 installs include GPU-specific dependencies;
 use a supported inference machine and budget disk space. Flash Attention is optional;
 it is unnecessary for the tiny CPU tests. Do not install this stack into a shared
 environment containing incompatible Transformers or Torch pins.
+
+## Preflight
+
+Before a first local run, validate the environment:
+
+```bash
+python scripts/_env_check.py          # report only
+python scripts/_env_check.py --prime  # also prime the ESMC caches serially
+```
+
+It checks the torch CUDA build (not merely `torch.cuda.is_available()`),
+symlink support in the HF cache, and the two sandbox variables that fail
+silently (`TORCHINDUCTOR_CACHE_DIR`, `USERNAME`), then exits non-zero on any
+FAIL with the remedy for each. `--prime` fetches ESMC-300M and ESMC-600M with
+`max_workers=1`, which is the documented way around the symlink race below;
+it is opt-in because it downloads several GiB.
 
 ## Device selection and VRAM
 
@@ -58,11 +86,11 @@ print(device_report())            # e.g. cuda (<GPU name>, 8.0 GiB)
 ```
 
 **A shared CUDA environment will not satisfy this skill.** The Python pin is
-strict (>=3.12) because the esm SDK's compiled extensions require it. Torch >=2.4
-is flexible enough to use available wheels; the original 2.11.x pin was too narrow
-and those wheels are no longer published. Build this skill its own Python 3.12 venv
-with CUDA torch (e.g., `cu121` or `cu124` cp312 win_amd64 wheel), use the hosted
-client, or re-verify the pins in case your local PyPI index differs. Check
+strict (>=3.12) because the esm SDK's compiled extensions require it, and the
+torch pin is strict (2.11.x) because the SDK declares it. Both have to hold in
+the same environment, which a general-purpose CUDA env rarely does. Build this
+skill its own Python 3.12 venv with the cu128 torch 2.11.0 cp312 win_amd64
+wheel shown above, or use the hosted client. Check
 `torch.__version__` and `sys.version` in the environment that will run the model
 rather than assuming pip resolved sensibly. Note also that the default PyPI torch
 wheel on Windows is CPU-only, so `torch.cuda.is_available()` being `False` is
@@ -84,7 +112,7 @@ bite:
   `C:\venvs\esm` — so without long paths, use the hosted client.
 - If `huggingface_hub` raises `WinError 1314` creating symlinks (measured
   2026-10), the environment variable `HF_HUB_DISABLE_SYMLINKS` does not exist in
-  the installed hub (versions tested: 1.32.0); `HF_HUB_DISABLE_SYMLINKS_WARNING`
+  the installed hub (versions tested: 0.36.2); `HF_HUB_DISABLE_SYMLINKS_WARNING`
   silences the warning only, not the crash. Root cause: `are_symlinks_supported()`
   memoizes True per-directory, and a parallel multi-file fetch races another
   thread's call to `os.symlink()`, which raises `OSError 1314` on Windows without

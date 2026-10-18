@@ -51,6 +51,22 @@ export MHCFLURRY_MODELS_DIR=/path/to/your/models
 mhcflurry-downloads fetch models_class1_presentation
 ```
 
+### Preflight
+
+To validate the environment before a run:
+
+```bash
+python scripts/_env_check.py
+```
+
+It reports PASS/WARN/FAIL for the Python version, MHCflurry version, the
+effective `MHCFLURRY_MODELS_DIR` and its writability, and whether the
+presentation predictor actually loads — exiting non-zero on any FAIL. It
+checks no GPU: prediction and triage are CPU work (see
+`references/compute-routes.md`), so a CPU-only torch wheel is not a defect
+here. Note that MHCflurry weights come from GitHub/Dropbox into
+`MHCFLURRY_MODELS_DIR`, not from the Hugging Face cache.
+
 MixMHCpred and the DTU Health Tech tools (NetMHCpan, NetMHCIIpan, BepiPred-3.0,
 DiscoTope-3.0, from services.healthtech.dtu.dk) are optional, installed
 separately, and detected by executable name on PATH. **They are academic-only,
