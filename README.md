@@ -175,34 +175,6 @@ documentation, not something the app can load. Re-enter a specialist by hand
 under **Settings > Specialists**. Re-importing this repo clears each
 specialist's skill selections, so re-select them afterward.
 
-## Conventions
-
-The skills were trimmed in 2026-10 to carry what is required and little else:
-SKILL.md bodies went from 318k to 234k characters (−26.6%). Three layers load at
-different times, and the weight that matters is in the first two:
-
-| Layer | Loads | Budget |
-|---|---|---|
-| `description`, `compatibility` | every session, for skill selection | ≤400 / ≤300 chars |
-| SKILL.md body | when the skill activates | orient and point, do not explain |
-| `references/`, `assets/` | on demand only | detail belongs here |
-
-1. **SKILL.md orients; references hold detail.** A passage restating upstream
-   library documentation belongs in a reference or behind a link — it is also
-   the main maintenance liability, since it goes stale silently.
-2. **Caveats are one sentence.** Correctness, determinism and "what was not
-   tested" notes stay, compressed to the claim. They are the point of this
-   collection; do not delete them to save space.
-3. **Every reference file is cited by its SKILL.md.** There are no orphans; a
-   reference nobody links to is dead weight.
-4. **No tutorial prose.** The reader already knows Python and the science.
-
-Two skills deliberately sit above the trend: `molecular-dynamics`, whose four
-simulation stages are distinct functions sharing one simulation object rather
-than the copy-paste they resemble, and `scientific-writing`, which stopped at
-−21% because the remainder is normative safety rules, where cutting further
-means deleting rules rather than compressing them.
-
 ## License
 
 Upstream skills are MIT
