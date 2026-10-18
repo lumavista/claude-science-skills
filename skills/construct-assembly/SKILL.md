@@ -5,7 +5,7 @@ license: MIT
 compatibility: Python 3.10+, standard library only for the developability screen — nothing here needs a GPU or network. ThermoMPNN is optional, MIT, installed from source by git SHA (no release tags), and uses a GPU when torch finds one while staying fast on CPU for small mutant sets.
 metadata:
   version: "1.0"
-  skill-author: Drafted for vaccine-design subset
+  skill-author: LumaVista.BIO
   last-reviewed: "2026-10-16"
 ---
 

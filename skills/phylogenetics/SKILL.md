@@ -1,11 +1,11 @@
 ---
 name: phylogenetics
 description: Builds and analyzes phylogenetic trees using MAFFT or pyfamsa multiple sequence alignment, IQ-TREE maximum likelihood with ModelFinder and branch support, and FastTree approximate inference. Uses ETE3 for tree summaries and visualization. Applies to homologous nucleotide or protein sequences, microbial gene trees, protein families, and cautiously interpreted dated phylogenies.
-license: Unknown
+license: MIT
 compatibility: Requires MAFFT and IQ-TREE 3 or FastTree executables on Linux/macOS. On Windows MAFFT, IQ-TREE and trimAl are unavailable in practice — use pyfamsa and FastTree. Optional tree summaries need Python 3.12 and ete3 3.1.3; rendering also needs PyQt5. Network only for installation.
 metadata:
   version: "1.6"
-  skill-author: Kuan-lin Huang, modified by Lumavista.BIO
+  skill-author: Kuan-lin Huang, modified by LumaVista.BIO
   last-reviewed: "2026-10-11"
 ---
 

@@ -5,7 +5,7 @@ license: MIT
 compatibility: Python 3.10+. MHCflurry 2.1 and the IEDB web APIs need network access and run anywhere. NetMHCpan-4.1, NetMHCIIpan-4.3, BepiPred-3.0 and DiscoTope-3.0 are DTU academic-licence tools installed separately; scripts use them if present, else fall back. Conformational prediction needs a structure.
 metadata:
   version: "1.1"
-  skill-author: Drafted for vaccine-design subset
+  skill-author: LumaVista.BIO
   last-reviewed: "2026-10-16"
 ---
 

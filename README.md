@@ -177,7 +177,11 @@ specialist's skill selections, so re-select them afterward.
 
 ## License
 
-Upstream skills are MIT
-([K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills)).
-Each skill, the original ones included, states its own license in its
-`SKILL.md`.
+MIT — see [`LICENSE`](LICENSE). The original skills and the local
+modifications are Copyright (c) 2026 LumaVista.BIO. Skills taken from
+[K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills)
+remain under that repo's
+[MIT license](https://github.com/K-Dense-AI/scientific-agent-skills/blob/main/LICENSE.md),
+Copyright (c) 2025 K-Dense Inc., whose notice is retained in `LICENSE`. Each
+skill also states its license in its `SKILL.md`; where an upstream skill says
+`Unknown`, the upstream repo-wide MIT license applies.

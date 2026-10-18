@@ -5,7 +5,7 @@ license: MIT
 compatibility: Python 3.10+, numpy, biopython for PDB numbering reconciliation. Surface patches also need freesasa (conda-forge) or an externally supplied RSA table. Alignment is not performed here — use the phylogenetics skill. No network access required.
 metadata:
   version: "1.0"
-  skill-author: Drafted for vaccine-design subset
+  skill-author: LumaVista.BIO
   last-reviewed: "2026-10-16"
 ---
 

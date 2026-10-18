@@ -1,7 +1,9 @@
 ---
 name: vector-integration-analysis
 description: Characterises integrated vector sequence in stable cell lines from WGS or insertion-site sequencing — site count, per-construct copy number or VCN, copies per site, construct attribution when vectors share backbone, junction artefacts. Use for integration or insertion sites, junction or breakpoint tables, soft-clipped reads, clonal line characterisation, concatemers, or QC of a provider's report.
-license: Apache-2.0
+license: MIT
+metadata:
+  skill-author: LumaVista.BIO
 ---
 
 # Vector integration analysis for stable cell lines
