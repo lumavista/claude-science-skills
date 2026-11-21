@@ -54,6 +54,21 @@ skills/vector-integration-analysis/**/junctions*.tsv
 !skills/*/assets/**
 !skills/*/references/**
 
+# ...and committed test inputs and golden outputs. Without this, a checked-in
+# fixture is silently unaddable: tests/fixtures/ above, *.fa, and the
+# skill-specific **/*.tsv rules each swallow one, and `git add` is a no-op that
+# stages nothing. A regression test needs a known-truth input it can commit.
+!skills/*/tests/**
+
+# A negation outranks the earlier __pycache__/ and *.py[cod] rules, so re-ignore
+# build junk under the directories just re-included. Otherwise a stray .pyc
+# under any skill's assets/ or tests/ is committable and churns on every Python
+# minor-version bump.
+skills/*/assets/**/__pycache__/
+skills/*/tests/**/__pycache__/
+skills/*/assets/**/*.py[cod]
+skills/*/tests/**/*.py[cod]
+
 # Model caches (download on demand, don't commit)
 skills/immunoinformatics/models/
 skills/esm/models/

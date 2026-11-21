@@ -29,6 +29,9 @@ class Issue:
     code: str
     location: str | None = None
     item_id: str | None = None
+    # Describes the SHAPE of the input (a missing column, a bad suffix), never
+    # manuscript text, so it does not weaken the confidentiality guarantee.
+    detail: str | None = None
 
     def to_dict(self) -> dict[str, str]:
         return {key: value for key, value in asdict(self).items() if value is not None}
@@ -130,10 +133,12 @@ def issue(
     *,
     location: str | None = None,
     item_id: str | None = None,
+    detail: str | None = None,
 ) -> Issue:
     if severity not in {"error", "warning", "info"}:
         raise ValueError("unsupported issue severity")
-    return Issue(severity=severity, code=code, location=location, item_id=item_id)
+    return Issue(severity=severity, code=code, location=location,
+                 item_id=item_id, detail=detail)
 
 
 def emit_report(
@@ -168,9 +173,13 @@ def emit_report(
 
 
 def emit_input_error(tool: str, exc: Exception) -> int:
+    # Without the message, every input failure in every CLI reports the same
+    # opaque {"code": "INVALID_INPUT", "location": "InputError"} and the caller
+    # cannot tell "output already exists" from "CSV has no header row".
     return emit_report(
         tool,
-        [issue("error", "INVALID_INPUT", location=type(exc).__name__)],
+        [issue("error", "INVALID_INPUT", location=type(exc).__name__,
+               detail=str(exc)[:200] or None)],
     )
 
 

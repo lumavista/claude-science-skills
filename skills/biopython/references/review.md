@@ -53,7 +53,8 @@ not obsolete entries or the full archive. See [PDBList](https://biopython.org/do
 
 ## Executed checks and limits
 
-- Repository `tests/biopython/test_examples.py`: 23 checks passed with 1.88,
+- The upstream repository's `test_examples.py` (not vendored here; this repo
+  ships no test suite for `biopython`): 23 checks passed with 1.88,
   including compression, annotation-aware reverse complement, aligner scoring,
   motifs, GenePop parsing, strand-aware segments/promoter candidates, tree
   construction/copy/collapse/rooted RF, atom transforms, same-chain ligand
@@ -64,8 +65,10 @@ not obsolete entries or the full archive. See [PDBList](https://biopython.org/do
 - A released upstream BLAST XML2 fixture parsed as one query with 11 hits using
   `NCBIXML`. Local BLAST+ 2.17.0+ built a tiny database and returned the expected
   240-base exact match in XML, standard tabular, and custom tabular formats.
-- `python tests/run_all.py --isolated biopython` and `skills-ref validate` passed.
-  Examples depending on user files remain templates, not universal analyses.
+- The upstream harness and its schema validation passed at review time. Neither
+  is vendored here, so these are records of an upstream run, not commands to
+  execute in this repository. Examples depending on user files remain templates,
+  not universal analyses.
 - MUSCLE 5, Clustal Omega, and DSSP executables were absent. Those command examples
   are illustrative; MUSCLE flags were checked against its
   [official manual](https://www.drive5.com/muscle5/manual/cmd_align.html).

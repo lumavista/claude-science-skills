@@ -143,7 +143,7 @@ Summarize the fields that matter rather than dumping raw JSON; quote a small rel
 
 ## Adding New Databases
 
-Create `references/<name>.md` in the format of the existing files (base URL, auth, endpoints with parameter tables, example calls, response shape, pagination/count behaviour, rate limits, identifier conventions, hazards), then add it to the selection guide and the list below. Run every call you document and record the failure modes. If the API paginates in a way that is easy to get wrong (bioRxiv-style cursors, silent short pages), add an adapter to `scripts/paginate.py` and a case to `tests/paper-lookup/`; simple `page`/`size` APIs stay in the reference file.
+Create `references/<name>.md` in the format of the existing files (base URL, auth, endpoints with parameter tables, example calls, response shape, pagination/count behaviour, rate limits, identifier conventions, hazards), then add it to the selection guide and the list below. Run every call you document and record the failure modes. If the API paginates in a way that is easy to get wrong (bioRxiv-style cursors, silent short pages), add an adapter to `scripts/paginate.py` plus a regression case alongside it; simple `page`/`size` APIs stay in the reference file.
 
 ## Available Databases
 
