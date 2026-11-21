@@ -63,6 +63,12 @@ Usage
         --out-subthreshold subthreshold_sites.tsv \\
         --summary site_summary.json --md site_summary.md
 
+With `--run run.json` the identity map, the loci tables, the vector ends, the
+copy-number JSON and the ploidy are taken from the run manifest that the
+earlier stages recorded them in, and the four outputs are named for you:
+
+    python reconcile_sites.py --run run.json --strict
+
 Rules, priority order and the ceiling argument: `references/attribution.md`.
 """
 from __future__ import annotations
@@ -75,65 +81,15 @@ import sys
 from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from via_common import load_json, natural_key  # noqa: E402
+from via_common import (MODALITIES, load_json, natural_key,  # noqa: E402
+                        read_loci)
+from via_run import (FAIL, PASS, WARN, Checks, RunError,  # noqa: E402
+                     add_check_arguments, load_run, reconcile_inputs)
 
 
 # --------------------------------------------------------------------------
 # input
 # --------------------------------------------------------------------------
-
-def _int(v: Optional[str]) -> Optional[int]:
-    try:
-        return int(float(v))                          # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-
-
-def read_loci(path: str, mapping: str) -> Tuple[List[Dict], List[str]]:
-    """Read one loci table written by classify_junctions.py --out-loci.
-
-    Returns its loci as per-mapping *entries*, plus the sample names taken
-    from the `support_<sample>` columns.
-    """
-    with open(path, encoding="utf-8") as fh:
-        hdr = fh.readline().rstrip("\n").split("\t")
-        need = {"contig", "start", "end", "vector_pos", "membership"}
-        missing = need - set(hdr)
-        if missing:
-            raise ValueError(
-                "%s: not a classify_junctions loci table (no %s column). Pass "
-                "the file written by --out-loci."
-                % (path, ", ".join(sorted(missing))))
-        samples = [h[len("support_"):] for h in hdr if h.startswith("support_")]
-        if not samples:
-            raise ValueError(
-                "%s: no support_<sample> column, so retention by sample count "
-                "is impossible. Re-run classify_junctions.py with --out-loci."
-                % path)
-        entries: List[Dict] = []
-        for n, line in enumerate(fh, start=2):
-            f = line.rstrip("\n").split("\t")
-            if len(f) != len(hdr):
-                continue
-            d = dict(zip(hdr, f))
-            start, end = _int(d["start"]), _int(d["end"])
-            if start is None or end is None:
-                continue
-            entries.append({
-                "mapping": mapping, "row": n, "contig": d["contig"],
-                "start": min(start, end), "end": max(start, end),
-                "flanks": _int(d.get("flanks")) or 1,
-                "footprint": _int(d.get("footprint")),
-                "vector_pos": _int(d.get("vector_pos")),
-                "region": d.get("region", ""),
-                "membership": frozenset(
-                    m.strip() for m in d.get("membership", "").split("+")
-                    if m.strip()),
-                "support": {s: (_int(d.get("support_" + s)) or 0)
-                            for s in samples},
-            })
-    return entries, samples
-
 
 def parse_kv(items: Sequence[str], flag: str) -> Dict[str, str]:
     out: Dict[str, str] = {}
@@ -648,9 +604,11 @@ CALLED_COLS = ["contig", "start", "end", "flanks", "footprint", "construct",
 
 
 def write_table(path: str, loci: Sequence[Dict], samples: Sequence[str],
-                extra: Sequence[str] = ()) -> None:
+                extra: Sequence[str] = (), tail: Sequence[str] = ()) -> None:
+    """`tail` columns (the host annotation) go after `note`, taken from the
+    locus dict, so a table without them is unchanged."""
     cols = list(CALLED_COLS) + ["support_" + s for s in samples] \
-        + list(extra) + ["note"]
+        + list(extra) + ["note"] + list(tail)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("\t".join(cols) + "\n")
         for L in loci:
@@ -672,6 +630,8 @@ def write_table(path: str, loci: Sequence[Dict], samples: Sequence[str],
             }
             for s in samples:
                 row["support_" + s] = L["support"].get(s, 0)
+            for c in tail:
+                row[c] = L.get(c, "")
             if L.get("same_mapping_merge"):
                 row["note"] = (str(row["note"]) + " | two entries of one "
                                "mapping were linked through another mapping's "
@@ -718,6 +678,29 @@ def _md_per_construct(result: Dict) -> List[str]:
                 "suggest.", ""]
 
 
+def _md_accounting(result: Dict) -> List[str]:
+    rows = result.get("site_accounting") or []
+    if not rows:
+        return []
+    L = ["## Do the called sites account for the DNA?", "",
+         "| Construct | copies/haploid | sites the DNA implies | attributed | "
+         "unaccounted for | |", "|---|---|---|---|---|---|"]
+    for r in rows:
+        L.append("| %s | %s | %s | %d | %s | %s |"
+                 % (r["construct"],
+                    "%.2f" % r["copies_per_haploid"]
+                    if r["copies_per_haploid"] is not None else "not reported",
+                    r["implied_sites"] if r["implied_sites"] is not None
+                    else "unknown",
+                    r["attributed"],
+                    r["unaccounted"] if r["unaccounted"] is not None else "-",
+                    r["verdict"]))
+    return L + ["", "The sites the DNA implies is the copy-number ceiling, "
+                "ceil(copies x ploidy / min_copies_per_site). A shortfall "
+                "means missing sites, an extrachromosomal pool, or more "
+                "copies per site than the divisor assumes.", ""]
+
+
 def _md_collapse(result: Dict) -> List[str]:
     p = result["parameters"]
     return ["## Collapse and retention", "",
@@ -759,6 +742,7 @@ def render_md(result: Dict) -> str:
         L += ["## Read this before using any count below", ""]
         L += ["> %s" % c for c in result["caveats"]] + [""]
     L += _md_per_construct(result)
+    L += _md_accounting(result)
     L += _md_collapse(result)
     L += _md_unresolved(result)
     return "\n".join(L)
@@ -786,54 +770,163 @@ def read_all_loci(tables: Dict[str, str]
     return entries, samples, per_table
 
 
-def preflight_caveats(a: argparse.Namespace, tables: Dict[str, str],
-                      samples: Sequence[str], per_table: Dict[str, List[str]],
-                      copies: Dict[str, Optional[float]], assumed_ploidy: bool
-                      ) -> List[str]:
+def preflight(a: argparse.Namespace, tables: Dict[str, str],
+              samples: Sequence[str], per_table: Dict[str, List[str]],
+              copies: Dict[str, Optional[float]], assumed_ploidy: bool
+              ) -> List[Tuple[str, str, str]]:
     """Everything the inputs cannot deliver, said before any count is shown.
 
     Each of these silently weakens a site count if it is not stated: an
     assumed ploidy scales every ceiling, a missing copy number removes a
     construct from the ceiling tier entirely, and an impossible
     `--min-samples` returns an empty site list that looks like a result.
+
+    Returns (check id, status, message). Every message is a caveat in the
+    report; the two that leave no usable site result are failing checks.
     """
-    out: List[str] = []
+    out: List[Tuple[str, str, str]] = []
     if assumed_ploidy:
-        out.append(
+        out.append(("ploidy", WARN, 
             "PLOIDY ASSUMED to be 2. It multiplies every copy-number ceiling, "
             "so it scales the upper bound of every site count directly. Many "
             "immortalised lines are aneuploid and drift on passage: measure "
-            "it and pass --ploidy.")
+            "it and pass --ploidy."))
     odd = {m: ss for m, ss in per_table.items() if list(ss) != list(samples)}
     if odd:
-        out.append(
+        out.append(("samples_consistent", WARN,
             "The mapping tables do not carry the same samples (%s). Support "
             "is combined over the union, so a locus can look sample-specific "
             "only because one mapping run never saw that sample."
             % "; ".join("%s: %s" % (m, ", ".join(ss) or "none")
-                        for m, ss in odd.items()))
+                        for m, ss in odd.items())))
     if a.min_samples > len(samples):
-        out.append(
+        out.append(("min_samples", FAIL,
             "--min-samples is %d but only %d sample(s) were supplied, so NO "
             "locus can be called. Lower it deliberately (and say so), or add "
             "the other samples' loci tables."
-            % (a.min_samples, len(samples)))
+            % (a.min_samples, len(samples))))
     ends = parse_ends(a.vector_ends)
     missing_ends = [m for m in tables if m not in ends or not ends[m]]
     if missing_ends:
-        out.append(
+        out.append(("vector_ends", WARN,
             "No --vector-ends for %s, so the vector-end tier could not be "
             "tested there. Loci that sit at those constructs' declared ends "
             "fall through to the copy-number ceiling or to unresolved."
-            % ", ".join(sorted(missing_ends)))
+            % ", ".join(sorted(missing_ends))))
     no_cn = [n for n in tables if copies.get(n) is None]
     if no_cn:
-        out.append(
+        out.append(("copy_number", FAIL,
             "No copy number for %s, so it has no ceiling and the "
             "copy-ceiling tier will not attribute anything to it. Supply "
             "copy_number.py --json output, or --copies %s=N."
-            % (", ".join(sorted(no_cn)), sorted(no_cn)[0]))
+            % (", ".join(sorted(no_cn)), sorted(no_cn)[0])))
     return out
+
+
+#: preflight checks, in a fixed order, with what a pass means
+PREFLIGHT_CHECKS = (
+    ("min_samples", "--min-samples can be met by the samples supplied"),
+    ("copy_number", "every mapped construct has a copy number, so a ceiling"),
+    ("ploidy", "ploidy was supplied, not assumed"),
+    ("vector_ends", "declared ends supplied for every mapped construct"),
+    ("samples_consistent", "every mapping table carries the same samples"),
+)
+
+
+def ceiling_divisor_finding(a: argparse.Namespace, measured: Optional[float],
+                            modality: Optional[str]) -> Optional[str]:
+    """Is the ceiling nominal where the run's own measurement could bind it?
+
+    `--min-copies-per-site` is never taken from the measurement silently: it
+    changes every site range, so it stays a decision. But leaving it at 1 on
+    a line whose copy-number stage measured arrays is worth saying out loud.
+    """
+    capable = (MODALITIES.get(modality or "auto") or {}).get("concatemers")
+    if (measured is None or measured <= 1.0 or capable is False
+            or a.min_copies_per_site != 1.0):
+        return None
+    return ("--min-copies-per-site was left at 1, but the copy-number stage "
+            "measured %.4g copies per site on this line. With a divisor of 1 "
+            "every ceiling is nominal: the upper bound of each site range is "
+            "the copy number itself. To make the ceiling binding, rerun with "
+            "--min-copies-per-site %.4g (references/attribution.md, section "
+            "3c); to keep 1 deliberately, say so in the report."
+            % (measured, measured))
+
+
+#: a construct holding this fraction of its ceiling or less has a shortfall
+SHORTFALL_FRACTION = 0.75
+#: ...and at least this many sites unaccounted for, so small counts are quiet
+SHORTFALL_SITES = 2
+
+
+def site_accounting(per_construct: Dict[str, Dict], unresolved: int
+                    ) -> Tuple[List[Dict], Optional[str]]:
+    """Do the called sites account for the DNA each construct was measured at?
+
+    The ceiling IS the implied site count -- ceil(copies x ploidy /
+    min_copies_per_site) -- so the comparison the report needs is the called
+    sites against the ceiling, per construct. Done here because it is the
+    step most easily skipped by hand, and because doing it for the primary
+    construct alone misses a shortfall on any other one.
+    """
+    rows: List[Dict] = []
+    short: List[str] = []
+    for n, d in per_construct.items():
+        cap, got = d["ceiling"], d["attributed"]
+        row = {"construct": n, "copies_per_haploid": d["copies_per_haploid"],
+               "implied_sites": cap, "attributed": got,
+               "unaccounted": None if cap is None else cap - got,
+               "verdict": ""}
+        if cap is None:
+            row["verdict"] = ("no copy number, so the DNA cannot be "
+                              "accounted for")
+        elif got > cap:
+            row["verdict"] = ("more sites than the copy number implies; see "
+                              "the ceiling contradiction above")
+        elif cap - got >= SHORTFALL_SITES and got <= SHORTFALL_FRACTION * cap:
+            row["verdict"] = ("SHORTFALL: %d of the %d sites the measured DNA "
+                              "implies are not accounted for"
+                              % (cap - got, cap))
+            short.append("%s: %d of %d" % (n, cap - got, cap))
+        else:
+            row["verdict"] = "the called sites account for the measured DNA"
+        rows.append(row)
+    if not short:
+        return rows, None
+    return rows, (
+        "SITE SHORTFALL (%s). The measured copy number implies more sites "
+        "than were attributed%s. Either sites are missing -- flanks lost to "
+        "repeats are the usual reason -- or part of the vector is "
+        "extrachromosomal, or each site carries more copies than "
+        "--min-copies-per-site assumes, which is the first thing to check on "
+        "a concatemer line. `references/quantification.md` section 7 and "
+        "`references/validation.md` section 4 give the tests."
+        % ("; ".join(short),
+           ", and %d called locus/loci are unresolved" % unresolved
+           if unresolved else ""))
+
+
+def stage_checks(checks: Checks, found: Sequence[Tuple[str, str, str]],
+                 attr_caveats: Sequence[str], divisor: Optional[str],
+                 n_called: int, shortfall: Optional[str] = None) -> Checks:
+    by_id = {cid: (status, msg) for cid, status, msg in found}
+    for cid, ok in PREFLIGHT_CHECKS:
+        status, msg = by_id.get(cid, (PASS, ok))
+        checks.add(cid, status, msg)
+    if attr_caveats:
+        checks.add("ceiling_contradiction", FAIL, " ".join(attr_caveats))
+    else:
+        checks.add("ceiling_contradiction", PASS,
+                   "no construct holds more sites than its ceiling admits")
+    checks.add("ceiling_divisor", WARN if divisor else PASS,
+               divisor or "ceiling divisor needs no attention")
+    checks.add("sites_called", PASS if n_called else WARN,
+               "%d locus/loci called" % n_called)
+    checks.add("site_accounting", WARN if shortfall else PASS,
+               shortfall or "the called sites account for every construct's "
+                            "measured DNA")
+    return checks
 
 
 def build_result(a: argparse.Namespace, tables: Dict[str, str],
@@ -878,7 +971,16 @@ def build_result(a: argparse.Namespace, tables: Dict[str, str],
 def write_outputs(a: argparse.Namespace, result: Dict, called: Sequence[Dict],
                   sub: Sequence[Dict], samples: Sequence[str]) -> None:
     if a.out_called:
-        write_table(a.out_called, called, samples)
+        tail: Sequence[str] = ()
+        if a.genes:
+            from host_reference import ANNOT_COLS, annotate_rows
+            called = annotate_rows(called, a.genes)
+            tail = ANNOT_COLS
+            regions: Dict[str, int] = {}
+            for L in called:
+                regions[L["host_region"]] = regions.get(L["host_region"], 0) + 1
+            result["host_annotation"] = {"genes": a.genes, "regions": regions}
+        write_table(a.out_called, called, samples, tail=tail)
     if a.out_subthreshold:
         write_table(a.out_subthreshold, sub, samples, extra=["reason"])
     md = render_md(result)
@@ -896,11 +998,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--identity", required=True)
-    ap.add_argument("--loci", action="append", required=True,
+    ap.add_argument("--identity", default="",
+                    help="identity map (required unless --run supplies it)")
+    ap.add_argument("--loci", action="append", default=[],
                     metavar="MAPPING=PATH",
                     help="loci table from classify_junctions.py --out-loci, "
-                         "one per mapping run; repeatable")
+                         "one per mapping run; repeatable (required unless "
+                         "--run supplies them)")
     ap.add_argument("--copy-number", default="",
                     help="copy_number.py --json output, for each construct's "
                          "copies per haploid")
@@ -945,11 +1049,55 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--out-subthreshold")
     ap.add_argument("--summary")
     ap.add_argument("--md")
+    ap.add_argument("--genes", default="",
+                    help="host gene table from host_reference.py: adds the "
+                         "host_region / host_gene / nearest_gene columns to "
+                         "the called table (default: the host stage's, if "
+                         "it recorded one)")
+    add_check_arguments(ap)
     return ap
 
 
 def main(argv=None) -> int:
     a = build_parser().parse_args(argv)
+
+    measured_cps: Optional[float] = None
+    run_modality: Optional[str] = None
+    try:
+        run = load_run(a.run)
+        if run is not None:
+            # Everything the earlier stages recorded; explicit flags win.
+            given = reconcile_inputs(run)
+            a.identity = a.identity or given["identity"] or ""
+            if not a.genes and run.stage("host").get("genes"):
+                a.genes = run.resolve(run.stage("host")["genes"])
+            a.loci = a.loci or ["%s=%s" % kv for kv in given["loci"].items()]
+            a.vector_ends = a.vector_ends or [
+                "%s=%s" % (m, ",".join(str(e) for e in ends))
+                for m, ends in given["vector_ends"].items()]
+            if not a.copy_number and not a.copies:
+                a.copy_number = given["copy_number"] or ""
+            if a.ploidy is None and given["ploidy"] is not None:
+                a.ploidy = float(given["ploidy"])
+            measured_cps, run_modality = (given["copies_per_site"],
+                                          given["modality"])
+            a.out_called = run.output(a.out_called, "called_sites.tsv")
+            a.out_subthreshold = run.output(a.out_subthreshold,
+                                            "subthreshold_sites.tsv")
+            a.summary = run.output(a.summary, "site_summary.json")
+            a.md = run.output(a.md, "site_summary.md")
+    except RunError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    if not a.identity or not a.loci:
+        print("error: need --identity and at least one --loci MAPPING=PATH, "
+              "or --run with a manifest that Stages 1 and 2 have recorded "
+              "them in", file=sys.stderr)
+        return 2
+    if a.genes and not os.path.exists(a.genes):
+        print("error: host gene table %s not found: rerun host_reference.py "
+              "or drop --genes" % a.genes, file=sys.stderr)
+        return 2
 
     try:
         ident = load_json(a.identity)
@@ -983,8 +1131,8 @@ def main(argv=None) -> int:
         return 2
 
     ploidy = a.ploidy if a.ploidy is not None else implied_ploidy
-    caveats = preflight_caveats(a, tables, samples, per_table, copies,
-                                ploidy is None)
+    found = preflight(a, tables, samples, per_table, copies, ploidy is None)
+    caveats = [msg for _, _, msg in found]
     if ploidy is None:
         ploidy = 2.0
 
@@ -994,13 +1142,23 @@ def main(argv=None) -> int:
     used, attr_caveats = attribute(called, known, copies, caps, ends,
                                    a.end_tol, a.cn_margin)
     caveats += attr_caveats
-
+    divisor = ceiling_divisor_finding(a, measured_cps, run_modality)
+    if divisor:
+        caveats.append(divisor)
     constructs = [n for n in known if n in tables or copies.get(n) is not None]
     per_construct = site_counts(called, constructs, copies, caps)
+    n_unresolved = sum(1 for L in called if not L["construct"])
+    accounting, shortfall = site_accounting(per_construct, n_unresolved)
+    if shortfall:
+        caveats.append(shortfall)
+    checks = stage_checks(Checks("reconcile_sites", a.accept), found,
+                          attr_caveats, divisor, len(called), shortfall)
 
     result = build_result(a, tables, samples, cn_how, ploidy, implied_ploidy,
                           entries, unified, called, sub, caps, used,
                           per_construct, caveats)
+    result["site_accounting"] = accounting
+    result["checks"] = checks.as_list()
     write_outputs(a, result, called, sub, samples)
 
     for c in caveats:
@@ -1018,7 +1176,15 @@ def main(argv=None) -> int:
     nu = len(result["unresolved"])
     print("    unresolved   %d (listed once each, attributed to no construct)"
           % nu, file=sys.stderr)
-    return 0
+    if run is not None:
+        run.record("reconcile", {
+            "called": run.relative(a.out_called),
+            "subthreshold": run.relative(a.out_subthreshold),
+            "summary": run.relative(a.summary), "md": run.relative(a.md),
+            "sites": {n: d["site_range"] for n, d in per_construct.items()},
+            "unresolved": nu, "annotated": bool(a.genes),
+            "checks": checks.as_list()})
+    return checks.finish(a.strict)
 
 
 if __name__ == "__main__":

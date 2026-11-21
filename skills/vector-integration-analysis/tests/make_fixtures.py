@@ -252,7 +252,25 @@ RECON_LOCI = [
 ]
 
 
+#: synthetic host contigs for the genome overview: lengths are arbitrary,
+#: not any real assembly's. Every RECON_LOCI contig is present, plus contigs
+#: carrying no locus, so the overview must draw chromosomes without ticks.
+FAI_CONTIGS = [("chr%d" % i, 200_000_000 - (i - 1) * 11_000_000)
+               for i in range(1, 14)] + [("chrX", 120_000_000),
+                                         ("scaffold_9", 9_000_000)]
+
+
+def write_fai(out: str) -> None:
+    offset = 0
+    with open(os.path.join(out, "contigs.fai"), "w") as fh:
+        for name, ln in FAI_CONTIGS:
+            offset += len(name) + 2
+            fh.write("%s\t%d\t%d\t60\t61\n" % (name, ln, offset))
+            offset += ln + ln // 60 + 1
+
+
 def write_reconcile_fixture(out: str) -> None:
+    write_fai(out)
     for which, mapping in enumerate(("pDelta", "pEpsilon")):
         for si, sample in enumerate(("s1", "s2")):
             rows = []

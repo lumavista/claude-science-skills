@@ -8,6 +8,12 @@ Run this at Stage 0, before analysis. None of the items below imply bad work by
 a provider — they are the normal gaps between a standard pipeline and a
 project-specific question, and most are fixed by asking.
 
+The four blocking items below are the ones `SKILL.md` names at Stage 0; the
+answers that the later stages need go into the run manifest
+(`assets/run.example.json`), and the rest belong in the report as open items.
+Nothing downstream can detect an unstated genome build, so what protects the
+analysis here is recording the answer, not a script.
+
 ## Blocking items — resolve before analysing
 
 - [ ] **Genome build.** Often unstated. Without it no locus can be annotated to

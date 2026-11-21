@@ -38,6 +38,11 @@ wrong quietly.
 Usage
 -----
     python copy_number.py config.json --md accounting.md [--json out.json]
+    python copy_number.py --run run.json --strict
+
+With `--run` no config file is written by hand: the run manifest holds the
+facts, and the identity map, each mapping's classified junctions and the
+detected-locus count are taken from what Stages 1 and 2 recorded in it.
 
 See `assets/copy_number_config.example.json` for the schema and
 `references/quantification.md` for the derivations and their assumptions.
@@ -51,13 +56,16 @@ import sys
 from typing import Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from via_common import (load_json, read_depth_file, solve_wls)  # noqa: E402
+from via_common import (MODALITIES, load_json, read_depth_file,  # noqa: E402
+                        solve_wls)
+from via_run import (FAIL, PASS, WARN, Checks, RunError,  # noqa: E402
+                     add_check_arguments, copy_number_config, load_run)
 
-# Keep in step with classify_junctions.MODALITIES
-CONCATEMER_CAPABLE = {"nhej": True, "hdr": True, "integrase": False,
-                      "transposon-pb": False, "transposon-sb": False,
-                      "auto": None}
-FIXED_COPIES_PER_SITE = {"integrase": 1, "transposon-pb": 1, "transposon-sb": 1}
+# Derived from the one modality table, so the two stages cannot disagree about
+# whether a delivery route can form arrays.
+CONCATEMER_CAPABLE = {name: m["concatemers"] for name, m in MODALITIES.items()}
+FIXED_COPIES_PER_SITE = {name: 1 for name, m in MODALITIES.items()
+                         if m["concatemers"] is False}
 
 
 # --------------------------------------------------------------------------
@@ -664,6 +672,23 @@ def architecture(cfg: Dict, jrows: Dict[str, List[Dict]], mapping: str,
             "n-1 internal junctions and 2 host flanks, so "
             "n = 1 + 2*(internal/flank). This is an average over all sites and "
             "cannot tell one 20-copy array from twenty single copies.")
+        if not internal:
+            # 1 + 2*(0/flank) is 1 whatever the line is. On a concatemer-
+            # capable modality that is the absence of evidence for arrays, not
+            # evidence of single copies, and the two look identical in the
+            # number alone.
+            out["notes"].append(
+                "Copies per site came out at 1 because no vector-vector "
+                "junction survived flagging, not because the sites were shown "
+                "to carry one copy each: 1 + 2*(0/flank) is 1 by "
+                "construction. On %s delivery arrays are possible, so treat "
+                "this as a LOWER bound on copies per site and the implied "
+                "site count as an upper bound. Internal junctions can be "
+                "absent because the array junctions are religation junctions "
+                "excluded by default (--include-end-religation), because "
+                "fillers exceed what a read spans, or because the line really "
+                "is single-copy per site; long reads separate these."
+                % modality)
     else:
         out["copies_per_site"] = None
         out["copies_per_site_source"] = (
@@ -976,6 +1001,102 @@ def render(cfg: Dict, result: Dict) -> str:
     return "\n".join(L)
 
 
+def stage_checks(checks: Checks, result: Dict,
+                 skipped_samples: Sequence[str] = ()) -> Checks:
+    """The conditions under which these copy numbers must not be reported."""
+    primary = result["primary_mapping"]
+    samples = result["samples"]
+
+    if result["modality"] == "auto":
+        checks.add("modality_declared", FAIL,
+                   "the delivery modality is undeclared, so copies per site -- "
+                   "and with it the implied site count -- cannot be chosen. "
+                   "Settle it from the Stage 2 fingerprint and declare it.")
+    else:
+        checks.add("modality_declared", PASS, "modality %s" % result["modality"])
+
+    routes = {s: d["solve"]["method"] for s, d in samples.items()}
+    per_sample = {s: (PASS if m.startswith("measured") else
+                      WARN if m.startswith("inferred") else FAIL)
+                  for s, m in routes.items()}
+    listing = "; ".join("%s: %s" % kv for kv in routes.items())
+    measured = [s for s, v in per_sample.items() if v == PASS]
+    # A sample with no depth does not invalidate the samples that have it, so
+    # the check fails only when NO sample was measured. Where some were, it
+    # warns and names which, because a reader will otherwise read one route
+    # label as covering the whole table.
+    if not samples:
+        checks.add("copy_number_route", WARN, "no samples")
+    elif not measured:
+        checks.add("copy_number_route", FAIL,
+                   "copy number was measured in no sample (%s). The figures "
+                   "are upper bounds or absent, and everything derived from "
+                   "them inherits that. Request `samtools depth -a` per vector "
+                   "reference (references/quantification.md)." % listing)
+    elif len(measured) < len(samples):
+        checks.add("copy_number_route", WARN,
+                   "copy number is measured from per-base depth in %s and not "
+                   "in %s (%s). Quote the measured samples as measured and the "
+                   "others as bounds; a sample with no depth is still usable "
+                   "for junction support in Stage 4."
+                   % (", ".join(measured),
+                      ", ".join(s for s in samples if s not in measured),
+                      listing))
+    else:
+        checks.add("copy_number_route", PASS, listing)
+
+    mismatched = [s for s, d in samples.items()
+                  if any("does not appear in the junction table" in n
+                         for n in d["architecture"]["notes"])]
+    if mismatched:
+        checks.add("sample_names", FAIL,
+                   "sample(s) %s are not in the junction table for %s, so "
+                   "flank and internal read counts are zero and copies per "
+                   "site, implied sites and the reconciliation are "
+                   "meaningless. Sample names must match the names given to "
+                   "classify_junctions.py." % (", ".join(mismatched), primary))
+    else:
+        checks.add("sample_names", PASS,
+                   "every sample is present in the junction table")
+
+    withheld = [s for s, d in samples.items()
+                if d["copies_per_haploid"].get(primary) is None]
+    incomplete = any("ADDITIVE MODEL INCOMPLETE" in c
+                     for c in result["caveats"])
+    notes = []
+    if withheld:
+        notes.append("no copy number is reported for %s in %s"
+                     % (primary, ", ".join(withheld)))
+    if incomplete:
+        notes.append("the additive model is incomplete (shared-block deficit "
+                     "or negative solve); copy numbers are the unique-block "
+                     "estimates")
+    if skipped_samples:
+        notes.append("sample(s) %s declare no dedup_pairs and were left out "
+                     "of the copy-number stage" % ", ".join(skipped_samples))
+    other = len(result["caveats"])
+    checks.add("estimate_caveats", WARN if (notes or other) else PASS,
+               ("; ".join(notes) + ". " if notes else "")
+               + "%d caveat(s) at the top of the report; quote them with the "
+                 "numbers." % other if (notes or other) else "no caveats")
+
+    verdicts = {s: d["reconciliation"]["verdict"].split(":")[0]
+                for s, d in samples.items()}
+    agree = all(v.startswith("AGREES") for v in verdicts.values())
+    checks.add("reconciliation", PASS if agree and verdicts else WARN,
+               "; ".join("%s: %s" % kv for kv in verdicts.items())
+               or "no samples")
+    return checks
+
+
+def copies_per_site_summary(result: Dict) -> Optional[float]:
+    """The largest measured copies per site over the samples, for Stage 4."""
+    vals = [d["architecture"]["copies_per_site"]
+            for d in result["samples"].values()
+            if d["architecture"]["copies_per_site"]]
+    return max(vals) if vals else None
+
+
 def resolve_trim(a: argparse.Namespace, cfg: Dict
                  ) -> Tuple[int, str, List[str]]:
     """Trim length and policy from CLI and config, mapping deprecated keys.
@@ -1027,7 +1148,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("config")
+    ap.add_argument("config", nargs="?", default="",
+                    help="config JSON (omit it when --run supplies the run "
+                         "manifest)")
     ap.add_argument("--md")
     ap.add_argument("--json")
     ap.add_argument("--trim-boundaries", type=int, default=None,
@@ -1061,20 +1184,40 @@ def main(argv=None) -> int:
                          "linear reference they are also produced by uncut "
                          "input molecule and by any co-resident construct whose "
                          "equivalent site is intact, so they are ambiguous.")
+    add_check_arguments(ap)
     a = ap.parse_args(argv)
 
+    skipped_samples: List[str] = []
     try:
-        cfg = load_json(a.config)
+        run = load_run(a.run)
+        if a.config:
+            cfg = load_json(a.config)
+            base = os.path.dirname(os.path.abspath(a.config))
+        elif run is not None:
+            cfg, skipped_samples = copy_number_config(run)
+            base = run.base
+        else:
+            print("error: give a config file, or --run RUN.json",
+                  file=sys.stderr)
+            return 2
+    except RunError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
     except (OSError, ValueError) as exc:
         print("error: cannot read config: %s" % exc, file=sys.stderr)
         return 2
+    if run is not None:
+        a.md = run.output(a.md, "accounting.md")
+        a.json = run.output(a.json, "accounting.json")
     cfg = {k: v for k, v in cfg.items() if not k.startswith("_")}
-    base = os.path.dirname(os.path.abspath(a.config))
     cfg["_base"] = base
 
     for key in ("identity", "genome_size", "read_length", "samples", "mappings"):
         if key not in cfg:
-            print("error: config is missing %r" % key, file=sys.stderr)
+            print("error: config is missing %r%s" % (
+                key, " (declare it in the manifest, or run host_reference.py "
+                     "--run first to take it from the host assembly)"
+                if key == "genome_size" else ""), file=sys.stderr)
             return 2
 
     try:
@@ -1190,6 +1333,9 @@ def main(argv=None) -> int:
         }
 
     result["caveats"] = caveats
+    checks = stage_checks(Checks("copy_number", a.accept), result,
+                          skipped_samples)
+    result["checks"] = checks.as_list()
     md = render(cfg, result)
     if a.md:
         with open(a.md, "w", encoding="utf-8") as fh:
@@ -1212,7 +1358,15 @@ def main(argv=None) -> int:
         print("    copies/site %s -> %s sites implied | %s"
               % (ar["copies_per_site"], ar["implied_sites"],
                  d["reconciliation"]["verdict"].split(":")[0]), file=sys.stderr)
-    return 0
+    if run is not None:
+        run.record("copy_number", {
+            "json": run.relative(a.json), "md": run.relative(a.md),
+            "primary_mapping": primary, "modality": modality,
+            "copies_per_haploid": {s: d["copies_per_haploid"]
+                                   for s, d in result["samples"].items()},
+            "copies_per_site": copies_per_site_summary(result),
+            "checks": checks.as_list()})
+    return checks.finish(a.strict)
 
 
 if __name__ == "__main__":

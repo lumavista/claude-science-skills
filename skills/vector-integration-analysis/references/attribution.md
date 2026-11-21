@@ -146,6 +146,13 @@ concatemer line, where each site holds an array, pass the measured copies per
 site from `copy_number.py`; that is what makes the ceiling binding rather than
 nominal.
 
+The script never takes that value from the copy-number stage by itself, because
+changing the divisor changes every site range and that is a decision, not a
+derivation. What it does instead, when the run manifest carries a measured
+copies-per-site above 1 and the divisor is still 1, is raise the
+`ceiling_divisor` check naming the measured value. Rerun with it, or keep 1 and
+say in the report that the ceiling is nominal.
+
 ### (d) unresolved
 
 Everything left is listed **once**, with its candidate constructs named, and

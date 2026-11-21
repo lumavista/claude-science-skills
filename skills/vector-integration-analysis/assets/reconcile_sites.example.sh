@@ -8,6 +8,14 @@
 #
 # Run it AFTER classify_junctions.py (once per mapping) and copy_number.py.
 # Report what it writes; do not re-derive loci, thresholds or attribution.
+#
+# This spells out every flag, which is useful for reading. In a real run the
+# manifest supplies them:
+#
+#     python scripts/reconcile_sites.py --run run.json --strict
+#
+# and only the decisions below -- the retention thresholds, the ceiling's
+# divisor and the margin -- are worth passing explicitly.
 set -euo pipefail
 
 python scripts/reconcile_sites.py \

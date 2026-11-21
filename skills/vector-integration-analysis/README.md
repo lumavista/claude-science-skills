@@ -37,44 +37,83 @@ design, AAV episomal configuration, expression analysis. See
 
 | Stage | Script | Output |
 |---|---|---|
-| 0 | — | deliverable QC (`references/report-qc.md`) |
+| 0 | — | deliverable QC (`references/report-qc.md`), and the run manifest (`assets/run.example.json`) |
 | 1 | `construct_identity.py` | per-base construct membership map, attributable fraction, predicted cross-mapping boundaries naming which construct clips where, coordinate correspondence |
 | 2 | `classify_junctions.py` | classified junctions, artefact flags, delivery fingerprint, target-site footprint check, locus table with flanks paired and evidence tiered, cross-sample ratios with CIs |
+| 2b | `host_reference.py` | the host organism and assembly (declared, hinted by cell line, or inferred from the host contigs; it stops to have you ask the user when the evidence does not decide), the NCBI assembly report and RefSeq gene annotation, the host `.fai`, and the haploid `genome_size` |
 | 3 | `copy_number.py` | per-construct copy number solved from per-base depth, per-unique-block estimates and their spread, copies per site, implied site count, flank detection, calibration |
 | 4 | `reconcile_sites.py` | **the called-site table**: cross-mapping collapse, retention, construct attribution by strict priority, bounded site count per construct, sub-threshold tail |
-| 5 | — | reporting what Stage 4 produced (`assets/report_template.md`) |
+| 5 | `make_figures.py` | the report's standard SVG figures (coverage tracks, genome overview, copy number, site-count bound), and the report template filled with them (`assets/report_template.md`) |
 
 ## Quick start
 
 ```bash
+# 0. state the run's facts once
+cp assets/run.example.json run.json      # fill in every value
+
 # 1. which parts of each construct are attributable, and where will
 #    cross-mapping artefacts appear?
-python scripts/construct_identity.py pAlpha.gb pBeta.gb pGamma.gb \
-    --min-block 150 --out identity.json --md identity_map.md
+python scripts/construct_identity.py pAlpha.gb pBeta.gb pGamma.gb --run run.json
 
 # 2. classify junctions and fingerprint the delivery, per mapped reference
-python scripts/classify_junctions.py --identity identity.json \
-    --mapping pAlpha --modality integrase --vector-ends 1,8412 \
-    --table parental=junctions_parental.tsv \
-    --table treated=junctions_treated.tsv --norm treated=0.87 \
-    --out-junctions junctions_pAlpha.tsv --out-loci loci_pAlpha.tsv \
-    --md stage2_pAlpha.md
-#    ... repeat for each construct mapped against separately
+python scripts/classify_junctions.py --run run.json --mapping pAlpha --strict
+python scripts/classify_junctions.py --run run.json --mapping pBeta  --strict
+
+# 2b. which host and build; fetch its .fai and gene annotation
+python scripts/host_reference.py --run run.json --strict
 
 # 3. copy number, architecture, site accounting
-cp assets/copy_number_config.example.json config.json   # fill in every value
-python scripts/copy_number.py config.json --md accounting.md --json accounting.json
+python scripts/copy_number.py --run run.json --strict
 
 # 4. ONE called-site table: collapse across mappings, retain, attribute
-python scripts/reconcile_sites.py --identity identity.json \
-    --loci pAlpha=loci_pAlpha.tsv --loci pBeta=loci_pBeta.tsv \
-    --copy-number accounting.json --ploidy 2 \
-    --vector-ends pAlpha=1,8412 --vector-ends pBeta=1,7650 \
-    --out-called called_sites.tsv --out-subthreshold subthreshold_sites.tsv \
-    --summary site_summary.json --md site_summary.md
+python scripts/reconcile_sites.py --run run.json --strict
+
+# 5. the report's figures (SVG), then fill the template's [[FIG:...]] slots
+cp assets/report_template.md report.md   # fill the text from the outputs
+python scripts/make_figures.py --run run.json --fill report.md
 ```
 
+With a host annotation from Stage 2b, `called_sites.tsv` gains, after its
+existing columns, each site's host context: `host_region` (exonic, intronic or
+intergenic), `host_gene`, and for an intergenic site the `nearest_gene` with its
+distance and side.
+
 Stage 4 is the site result — report it rather than re-deriving loci by hand.
+The figures come from `make_figures.py`, never drawn by hand: a coverage track
+per construct per sample, a genome-wide integration-site overview, copy number
+with the shared-block closure, and the site-count bound per construct. Each is
+driven only by the standard outputs, so it works for any genome and any number
+of constructs. A figure whose input is missing is skipped with a note, not a
+failure.
+
+Every flag each stage accepts still works, and still means what it did; the
+manifest only removes the need to pass them. `--help` on any script lists them.
+
+## One file states the run; the exit status says whether to continue
+
+`run.json`, the run manifest, holds the facts a run rests on — genome size,
+read length, ploidy, modality, each construct's vector ends, and per sample the
+junction tables, read counts and depth files. Each stage reads what it needs
+from it, writes its outputs beside it under fixed names, and records them in it
+for the next stage. Nothing is retyped between stages: not the identity map,
+not the classified-junction tables, not the loci tables, not the copy numbers,
+not the detected-locus count.
+
+Each stage also emits **checks** — the conditions under which its output must
+not be used as it stands — in three places at once: a banner at the top of its
+report, a `checks` list in its JSON (`id`, `status`, `message`), and stderr.
+With `--strict` a failing check makes the stage exit 3, so a run stops at the
+stage that found the problem rather than carrying it into the site count.
+`--accept ID` acknowledges one failing check after investigation; it stays in
+the output marked `accepted`.
+
+Checks exist for a declared modality the junctions contradict, a fixed-end
+modality with no vector ends, an uninterpretable clip side, a footprint that
+matches no pair, an undeclared modality, a copy number that was not measured, a
+sample name absent from the junction table, an unmeetable `--min-samples`, a
+construct with no copy-number ceiling, a ceiling contradicted by sequence
+evidence, and a ceiling left nominal on a concatemer line. `SKILL.md` lists what
+each one means and what resolves it.
 
 ## The site result is produced, not argued
 
@@ -169,7 +208,7 @@ Python 3.8+. No third-party packages.
 tests/run_tests.sh
 ```
 
-144 assertions over synthetic fixtures. Every sequence used in testing is
+231 assertions over synthetic fixtures. Every sequence used in testing is
 pseudo-random and generated at run time — **no real vector, plasmid or genome
 sequence is stored in this repository.**
 
@@ -193,6 +232,40 @@ hundred-fold does not move a locus past a full ceiling; and with two
 **equal-copy** constructs the shared loci come out unresolved — proof that the
 procedure declines to attribute when the data cannot support it.
 
+For the figures it asserts that every SVG `make_figures.py` writes is
+well-formed with an `<svg>` root, for the one-sample three-construct case and
+the two-construct, two-trim-policy case. The genome overview must draw every
+contig of the fixture `.fai`, with one tick per called locus and the
+confidence tiers intact. Each coverage track must shade every identity-map
+block and show the baseline and the trimmed bases. A missing input must skip
+its figure with a reason rather than fail the run. `--fill` must leave no
+figure slot unfilled in the report body.
+
+For the run manifest and the checks it asserts that the manifest route
+reproduces the flag-and-config route byte for byte on the loci, called-site and
+classified-junction tables and value for value on the copy numbers and the site
+summary; that every stage records its outputs while leaving the declared facts
+untouched; that an explicit flag still overrides the manifest; that each
+blocking condition exits 3 under `--strict`, exits 0 without it, reaches the
+report as a banner and the JSON as a status, and unblocks under `--accept`; and
+that a sample with depth is not spoiled by a sample without it; that the
+shortfall between a construct's measured DNA and its called sites is reported
+per construct rather than for the primary mapping alone; and that a measured
+copies-per-site value is flagged to the caller but never
+applied to the ceiling on its own.
+
+`tests/test_host.sh` covers the host stage offline, against a synthetic
+catalogue cache. It checks that a RefSeq accession is inferred, that
+`chr`-style names fitting several assemblies stop the run instead of being
+guessed, and that a cell-line hint settles it. It checks that a contig missing
+from the host, or a position past a contig's end, fails, and that decoys only
+warn. It checks that the assembly's `genome_size` reproduces the declared
+one's copy numbers, and that the annotation only appends columns, leaving the
+called table otherwise byte-identical. Finally it checks that exonic,
+intronic and intergenic sites are labelled correctly, that `make_figures.py
+--run` draws the genome overview from the host `.fai`, and that a declared
+genome size contradicting the assembly fails.
+
 ## Reference material
 
 | File | Read when |
@@ -205,3 +278,6 @@ procedure declines to attribute when the data cannot support it.
 | `references/report-qc.md` | Stage 0, and whenever a report disagrees with the tables |
 | `references/validation.md` | designing junction PCR, ddPCR or long-read follow-up |
 | `references/scope.md` | the data turns out to be polyclonal clonal-tracking |
+
+`SKILL.md` is the workflow: the stages in order, what each one writes, what its
+checks mean, and the domain rules that govern the analysis.

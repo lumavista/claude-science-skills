@@ -36,6 +36,7 @@ the canonical, expected junction and its ABSENCE is what deserves suspicion.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import sys
@@ -43,71 +44,11 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from via_common import (Junction, NameMatcher, fmt_warnings,  # noqa: E402
-                        load_json, natural_key, parse_clip_map,
-                        parse_column_spec, read_junction_table)
-
-
-# --------------------------------------------------------------------------
-# modalities
-# --------------------------------------------------------------------------
-#
-# `footprint` is the expected value of
-#       delta = host_pos(right flank) - host_pos(left flank) - 1
-# A target-site duplication of d bp makes the two flanks overlap in reference
-# coordinates, so delta = -d. A target-site deletion of m bp gives delta = +m.
-# A clean join gives 0.
-
-MODALITIES: Dict[str, Dict] = {
-    "nhej": {
-        "label": "end-joining (linearized plasmid, naked DNA, minicircle)",
-        "fixed_ends": False,
-        "concatemers": True,
-        "footprint": None,            # variable: small deletions are the norm
-        "footprint_range": (-3, 40),
-        "copies_per_site": "variable (1 to tens; tandem arrays are the rule)",
-    },
-    "integrase": {
-        "label": "integrase-mediated (lentivirus, gammaretrovirus)",
-        "fixed_ends": True,
-        "concatemers": False,
-        "footprint": -5,              # HIV-1; MLV is -4
-        "footprint_range": (-6, -3),
-        "copies_per_site": "1",
-    },
-    "transposon-pb": {
-        "label": "PiggyBac transposase",
-        "fixed_ends": True,
-        "concatemers": False,
-        "footprint": -4,              # TTAA duplicated
-        "footprint_range": (-4, -4),
-        "copies_per_site": "1",
-    },
-    "transposon-sb": {
-        "label": "Sleeping Beauty transposase",
-        "fixed_ends": True,
-        "concatemers": False,
-        "footprint": -2,              # TA duplicated
-        "footprint_range": (-3, -1),
-        "copies_per_site": "1",
-    },
-    "hdr": {
-        "label": "homology-directed targeted integration (knock-in)",
-        "fixed_ends": True,
-        "concatemers": True,          # concatemers at the target locus happen
-        "footprint": 0,
-        "footprint_range": (-2, 2),
-        "copies_per_site": "1 per targeted allele, but check for concatemers",
-    },
-    "auto": {
-        "label": "undeclared -- inferred from the data",
-        "fixed_ends": None,
-        "concatemers": None,
-        "footprint": None,
-        "footprint_range": None,
-        "copies_per_site": "unknown until the modality is settled",
-    },
-}
+from via_common import (MODALITIES, Junction, NameMatcher,  # noqa: E402
+                        fmt_warnings, load_json, natural_key, parse_clip_map,
+                        parse_column_spec, read_junction_table, write_loci)
+from via_run import (FAIL, PASS, WARN, Checks, RunError,  # noqa: E402
+                     add_check_arguments, load_run)
 
 
 # --------------------------------------------------------------------------
@@ -273,6 +214,16 @@ def fingerprint(js: Sequence[Junction], ends: Sequence[int], end_tol: int,
     }
 
 
+def fingerprint_agrees(modality: str, fp: Dict) -> Optional[bool]:
+    """Does the fingerprint match the declared modality? None = not testable
+    (modality undeclared, or too few junctions to fingerprint)."""
+    fixed = MODALITIES[modality]["fixed_ends"]
+    if not fp.get("suggests") or fixed is None:
+        return None
+    return bool((fixed and "FIXED" in fp["verdict"])
+                or (not fixed and "SCATTERED" in fp["verdict"]))
+
+
 # --------------------------------------------------------------------------
 # locus assembly
 # --------------------------------------------------------------------------
@@ -407,16 +358,120 @@ def cross_sample(js: Sequence[Junction], ref_sample: str,
     return out
 
 
+def evidence_tier(membership: str) -> str:
+    """Tier a locus by how many constructs carry the vector base it sits on.
+
+    Not by the region label: for integrase-mediated delivery every junction
+    sits at a vector end, so a region-based tier would mark everything
+    "inferred" even where the end sequence is unique to one vector.
+    """
+    carriers = [c for c in membership.split(" + ") if c]
+    return ("certain" if len(carriers) == 1
+            else "inferred" if carriers else "unknown")
+
+
+def locus_rows(loci: Sequence[Dict], xs: Dict[Tuple, Dict], ref_sample: str,
+               samples: Sequence[str]) -> List[Dict[str, object]]:
+    """The loci as rows for `via_common.write_loci`, in contig order."""
+    rows: List[Dict[str, object]] = []
+    for x in sorted(loci, key=lambda L: (natural_key(L["contig"]), L["start"])):
+        j = x["rep"]
+        row: Dict[str, object] = {
+            "contig": x["contig"], "start": x["start"], "end": x["end"],
+            "flanks": x["flanks"], "footprint": x["footprint"],
+            "vector_pos": j.vector_pos, "region": j.region,
+            "membership": j.membership, "feature": j.feature,
+            "evidence_tier": evidence_tier(j.membership),
+            "support_" + ref_sample: x["support"]}
+        rec = xs.get((j.host_contig, j.host_pos, j.vector_pos)) or {}
+        for s in samples:
+            o = rec.get("others", {}).get(s)
+            if s != ref_sample and o and o["support"]:
+                row.update({"support_" + s: o["support"],
+                            "ratio_" + s: round(o["ratio"], 2),
+                            "lo_" + s: round(o["lo"], 2),
+                            "hi_" + s: round(o["hi"], 2)})
+        rows.append(row)
+    return rows
+
+
+# --------------------------------------------------------------------------
+# checks: the conditions under which Stage 2's output must not be counted from
+# --------------------------------------------------------------------------
+
+def stage_checks(checks: Checks, mapping: str, modality: str,
+                 ends: Sequence[int], ident: Dict, fp: Dict, foot: Dict,
+                 infos: Dict[str, Dict]) -> Checks:
+    mod = MODALITIES[modality]
+    length = ident["constructs"][mapping]["length"]
+
+    if mod["fixed_ends"] and not ends:
+        checks.add("vector_ends", FAIL,
+                   "--modality %s cuts the vector at defined termini, but no "
+                   "--vector-ends was given. Every genuine junction at a "
+                   "terminus is then flagged `reference-edge` and dropped from "
+                   "the locus table, so the loci below are not the line's "
+                   "sites. %s is %d bp in the identity map; a reference built "
+                   "from the integrated form has its ends at 1,%d. Rerun with "
+                   "--vector-ends." % (modality, mapping, length, length))
+    else:
+        checks.add("vector_ends", PASS,
+                   "declared ends: %s" % (", ".join(str(e) for e in ends)
+                                          or "none (not required for %s)"
+                                          % modality))
+
+    agrees = fingerprint_agrees(modality, fp)
+    if agrees is False:
+        checks.add("modality_fingerprint", FAIL,
+                   "the junctions do not look like the declared modality (%s): "
+                   "%s. The two kinds of delivery use different copies-per-site "
+                   "arithmetic, so settle which is right before any copy "
+                   "number or site count (references/modalities.md)."
+                   % (modality, fp["verdict"]))
+    elif agrees is None:
+        checks.add("modality_fingerprint", WARN,
+                   "fingerprint not tested against a declared modality: %s%s"
+                   % (fp["verdict"],
+                      "; modality is undeclared (auto)"
+                      if mod["fixed_ends"] is None else ""))
+    else:
+        checks.add("modality_fingerprint", PASS, fp["verdict"])
+
+    unusable = ["%s: %s" % (s, i["clip"].reason)
+                for s, i in infos.items() if not i["clip"].ok]
+    if unusable:
+        checks.add("clip_side", FAIL,
+                   "clip side unusable (%s). No flanks could be paired, so "
+                   "every locus is single-flank and the site count has lost "
+                   "its consistency check. Declare the convention with "
+                   "--clip-map (references/input-formats.md), or accept this "
+                   "check if the caller truly reports no clip side."
+                   % "; ".join(unusable))
+    else:
+        checks.add("clip_side", PASS, "clip side interpretable in every table")
+
+    verdict = foot["verdict"]
+    if verdict.startswith("NO paired flank"):
+        checks.add("footprint", FAIL, verdict)
+    elif "others need explaining" in verdict:
+        checks.add("footprint", WARN, verdict)
+    else:
+        checks.add("footprint", PASS, verdict)
+    return checks
+
+
 # --------------------------------------------------------------------------
 # reporting
 # --------------------------------------------------------------------------
 
 def render_md(mapping: str, modality: str, samples: Sequence[str],
               infos: Dict[str, Dict], fp: Dict, foot: Dict,
-              loci: Sequence[Dict], counts: Dict, warnings: Sequence[str]) -> str:
+              loci: Sequence[Dict], counts: Dict, warnings: Sequence[str],
+              checks: Optional[Checks] = None) -> str:
     mod = MODALITIES[modality]
-    L = ["# Stage 2 -- junction classification (%s)" % mapping, "",
-         "**Declared modality:** %s" % mod["label"],
+    L = ["# Stage 2 -- junction classification (%s)" % mapping, ""]
+    L += checks.banner_md() if checks is not None else []
+    L += ["**Declared modality:** %s" % mod["label"],
          "", "**Expected copies per site:** %s" % mod["copies_per_site"], ""]
 
     L += ["## How the input was read", "",
@@ -438,9 +493,8 @@ def render_md(mapping: str, modality: str, samples: Sequence[str],
           "> %s" % fp["verdict"], ""]
     if fp.get("suggests"):
         L += ["Consistent with: **%s**." % fp["suggests"], ""]
-        if mod["fixed_ends"] is not None:
-            agrees = (mod["fixed_ends"] and "FIXED" in fp["verdict"]) or \
-                     (not mod["fixed_ends"] and "SCATTERED" in fp["verdict"])
+        agrees = fingerprint_agrees(modality, fp)
+        if agrees is not None:
             L += ["Declared modality %s the fingerprint.%s"
                   % ("**agrees with**" if agrees else "**DISAGREES with**",
                      "" if agrees else " Settle this before trusting any copy "
@@ -496,16 +550,20 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--identity", required=True)
+    ap.add_argument("--identity", default="",
+                    help="identity map from construct_identity.py (required "
+                         "unless --run supplies it)")
     ap.add_argument("--mapping", required=True,
                     help="construct name the reads were mapped against")
-    ap.add_argument("--modality", default="auto", choices=sorted(MODALITIES),
+    ap.add_argument("--modality", default=None, choices=sorted(MODALITIES),
                     help="delivery route. Decides which arithmetic is valid "
                          "downstream and what footprint to expect. 'auto' "
-                         "infers it from the data and refuses to assume.")
-    ap.add_argument("--table", action="append", required=True,
+                         "infers it from the data and refuses to assume. "
+                         "Default: the run manifest's, else auto.")
+    ap.add_argument("--table", action="append", default=[],
                     dest="table", metavar="SAMPLE=PATH",
-                    help="junction table; repeatable, any number of samples")
+                    help="junction table; repeatable, any number of samples "
+                         "(required unless --run supplies them)")
     ap.add_argument("--ref-sample", default="",
                     help="sample that cross-sample ratios are taken against "
                          "(default: the first --table)")
@@ -547,7 +605,8 @@ def main(argv=None) -> int:
                     help="filler at or above this is a cross-mapping "
                          "signature. Default 0 = derive it from --read-length "
                          "as read_length - 2*25.")
-    ap.add_argument("--read-length", type=int, default=150)
+    ap.add_argument("--read-length", type=int, default=None,
+                    help="default: the run manifest's, else 150")
     ap.add_argument("--inverted-min-span", type=int, default=15)
     ap.add_argument("--inverted-max-span", type=int, default=200)
     ap.add_argument("--no-prefix-match", action="store_true",
@@ -556,7 +615,56 @@ def main(argv=None) -> int:
     ap.add_argument("--out-junctions")
     ap.add_argument("--out-loci")
     ap.add_argument("--md")
+    ap.add_argument("--json",
+                    help="write the stage summary -- fingerprint, footprint, "
+                         "locus counts, output paths and the checks -- as JSON")
+    add_check_arguments(ap)
     a = ap.parse_args(argv)
+
+    try:
+        run = load_run(a.run)
+        run_ends = run.vector_ends(a.mapping) if run is not None else []
+    except RunError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    if run is not None:
+        # The manifest supplies what was not given explicitly, and names the
+        # outputs, so the next stage can find them.
+        a.identity = a.identity or run.identity_path() or ""
+        a.modality = a.modality or run.fact("modality")
+        a.read_length = a.read_length or run.fact("read_length")
+        a.ends = a.ends or ",".join(str(e) for e in run_ends)
+        a.table = a.table or ["%s=%s" % t for t in run.tables(a.mapping)]
+        a.norm = a.norm or ["%s=%s" % kv for kv in run.norms().items()]
+        a.out_junctions = run.output(a.out_junctions,
+                                     "classified_%s.tsv" % a.mapping)
+        a.out_loci = run.output(a.out_loci, "loci_%s.tsv" % a.mapping)
+        a.md = run.output(a.md, "stage2_%s.md" % a.mapping)
+        a.json = run.output(a.json, "stage2_%s.json" % a.mapping)
+    a.modality = a.modality or "auto"
+    a.read_length = int(a.read_length or 150)
+    if a.modality not in MODALITIES:
+        print("error: modality %r unknown; expected one of %s"
+              % (a.modality, ", ".join(sorted(MODALITIES))), file=sys.stderr)
+        return 2
+    if not a.identity:
+        print("error: no identity map: pass --identity, or --run with a "
+              "manifest that Stage 1 has recorded one in", file=sys.stderr)
+        return 2
+    outputs = {os.path.abspath(p) for p in (a.out_junctions, a.out_loci,
+                                            a.md, a.json) if p}
+    clobbered = [t for t in a.table
+                 if os.path.abspath(t.partition("=")[2] or t) in outputs]
+    if clobbered:
+        print("error: an output path is also an input junction table (%s); "
+              "refusing to overwrite the input" % ", ".join(clobbered),
+              file=sys.stderr)
+        return 2
+    if not a.table:
+        print("error: no junction table: pass --table SAMPLE=PATH, or declare "
+              "samples.<sample>.junctions.%s in the run manifest" % a.mapping,
+              file=sys.stderr)
+        return 2
 
     try:
         ident = load_json(a.identity)
@@ -699,57 +807,50 @@ def main(argv=None) -> int:
                 fh.write("\t".join(str(d[c]) for c in cols) + "\n")
 
     if a.out_loci:
-        others = [s for s in samples if s != ref_sample]
-        with open(a.out_loci, "w", encoding="utf-8") as fh:
-            hdr = ["contig", "start", "end", "flanks", "footprint",
-                   "vector_pos", "region", "membership", "feature",
-                   "evidence_tier", "support_" + ref_sample]
-            for s in others:
-                hdr += ["support_" + s, "ratio_" + s, "lo_" + s, "hi_" + s]
-            fh.write("\t".join(hdr) + "\n")
-            for x in sorted(loci, key=lambda L: (natural_key(L["contig"]),
-                                                 L["start"])):
-                j = x["rep"]
-                # The tier is set by how many constructs carry the vector base
-                # the junction sits on, not by the region label. For
-                # integrase-mediated delivery every junction sits at a vector
-                # end, so a region-based tier would mark everything "inferred"
-                # even where the end sequence is unique to one vector.
-                carriers = [c for c in j.membership.split(" + ") if c]
-                tier = ("certain" if len(carriers) == 1
-                        else "inferred" if carriers else "unknown")
-                row: List[object] = [
-                    x["contig"], x["start"], x["end"], x["flanks"],
-                    x["footprint"] if x["footprint"] is not None else "",
-                    j.vector_pos, j.region, j.membership, j.feature, tier,
-                    x["support"]]
-                k = (j.host_contig, j.host_pos, j.vector_pos)
-                rec = xs.get(k)
-                for s in others:
-                    o = (rec or {}).get("others", {}).get(s)
-                    if o and o["support"]:
-                        row += [o["support"], round(o["ratio"], 2),
-                                round(o["lo"], 2), round(o["hi"], 2)]
-                    else:
-                        row += ["", "", "", ""]
-                fh.write("\t".join(str(v) for v in row) + "\n")
+        write_loci(a.out_loci, [ref_sample] + [s for s in samples
+                                               if s != ref_sample],
+                   locus_rows(loci, xs, ref_sample, samples))
 
+    checks = stage_checks(Checks("classify_junctions", a.accept), a.mapping,
+                          a.modality, ends, ident, fp, foot, infos)
     md = render_md(a.mapping, a.modality, samples, infos, fp, foot, loci,
-                   counts, warnings)
+                   counts, warnings, checks)
     if a.md:
         with open(a.md, "w", encoding="utf-8") as fh:
             fh.write(md)
 
+    paired = sum(1 for x in loci if x["flanks"] == 2)
+    summary = {
+        "mapping": a.mapping, "modality": a.modality,
+        "read_length": a.read_length, "vector_ends": ends,
+        "ref_sample": ref_sample, "samples": samples,
+        "fingerprint": fp, "footprint": foot,
+        "junctions": {k: dict(v) if isinstance(v, dict) else v
+                      for k, v in counts.items()},
+        "detected_loci": len(loci), "loci_both_flanks": paired,
+        "clip_usable": clip_usable, "warnings": warnings,
+        "checks": checks.as_list(),
+    }
+    if a.json:
+        with open(a.json, "w", encoding="utf-8") as fh:
+            json.dump(summary, fh, indent=2)
+    if run is not None:
+        run.record("classify", {
+            "modality": a.modality, "vector_ends": ends, "samples": samples,
+            "ref_sample": ref_sample,
+            "junctions": run.relative(a.out_junctions),
+            "loci": run.relative(a.out_loci), "md": run.relative(a.md),
+            "json": run.relative(a.json),
+            "detected_loci": len(loci), "loci_both_flanks": paired,
+            "fingerprint": fp["verdict"],
+            "checks": checks.as_list()}, key=a.mapping)
+
     print("[%s] modality=%s | %s" % (a.mapping, a.modality, fp["verdict"]),
           file=sys.stderr)
-    if fp.get("suggests") and MODALITIES[a.modality]["fixed_ends"] is not None:
-        agrees = ((MODALITIES[a.modality]["fixed_ends"] and "FIXED" in fp["verdict"])
-                  or (not MODALITIES[a.modality]["fixed_ends"]
-                      and "SCATTERED" in fp["verdict"]))
-        if not agrees:
-            print("  WARNING: the data do not look like the declared modality "
-                  "(%s). Settle this before trusting any site count."
-                  % a.modality, file=sys.stderr)
+    if fingerprint_agrees(a.modality, fp) is False:
+        print("  WARNING: the data do not look like the declared modality "
+              "(%s). Settle this before trusting any site count."
+              % a.modality, file=sys.stderr)
     for kind in ("host-vector", "vector-vector", "vector-unmapped", "host-host"):
         print("    %-18s %4d  (%d flagged artefact)"
               % (kind, counts["kind"].get(kind, 0),
@@ -757,13 +858,12 @@ def main(argv=None) -> int:
     for reg in ("unique", "shared", "vector-end"):
         print("    host junctions in %-14s %d" % (reg, counts["region"].get(reg, 0)),
               file=sys.stderr)
-    paired = sum(1 for x in loci if x["flanks"] == 2)
     print("    loci: %d  (%d with both flanks, %d single-flank)%s"
           % (len(loci), paired, len(loci) - paired,
              "  [clip side unusable: NOTHING could be paired]"
              if not clip_usable else ""), file=sys.stderr)
     print("    footprint: %s" % foot["verdict"], file=sys.stderr)
-    return 0
+    return checks.finish(a.strict)
 
 
 if __name__ == "__main__":

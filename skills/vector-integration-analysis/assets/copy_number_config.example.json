@@ -1,5 +1,5 @@
 {
-  "_README": "Config for copy_number.py. Paths are relative to this file. Keys starting with _ are comments and are ignored. Replace every value.",
+  "_README": "Config for copy_number.py, for a stage run on its own. A whole run is better served by the run manifest (assets/run.example.json): `copy_number.py --run run.json` builds this config from what Stages 1 and 2 recorded, so the identity map, the junction tables and the detected-locus count are not retyped here. Paths are relative to this file. Keys starting with _ are comments and are ignored. Replace every value.",
 
   "identity": "identity.json",
 
