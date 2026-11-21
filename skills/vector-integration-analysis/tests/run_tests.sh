@@ -387,6 +387,276 @@ printf 'chromosome\tposition1\tclip_type_1\tfiller_length\tref2\tposition2\tclip
   || assert_has "no-construct table is fatal, not silent" e2.log "silent and catastrophic"
 
 echo
+echo "== Stage 3: per-unique-block spread and no size-threshold drops =="
+# pTheta has TWO unique blocks at different depths (20x and 30x): both must
+# contribute, bp-weighted, and the disagreement must be reported rather than
+# averaged away. pIota's single unique block retains 150 bp, which the retired
+# min_class_bp of 200 silently dropped -- it must now be used.
+cat > cfg_spread.json <<'JSON'
+{"identity":"identity_spread.json","genome_size":3100000000,"read_length":150,
+ "ploidy":2,"primary_mapping":"pTheta","modality":"nhej",
+ "samples":{"s1":{"dedup_pairs":299666666,"baseline_depth":29.0,
+   "depth_files":{"pTheta":"depth_spread_pTheta.txt",
+                  "pIota":"depth_spread_pIota.txt"}}},
+ "mappings":{"pTheta":{},"pIota":{}}}
+JSON
+"$PY" "$SCRIPTS/copy_number.py" cfg_spread.json --md q_spread.md \
+  --json q_spread.json >q_spread.log 2>&1 \
+  && ok "per-block spread case ran" || { bad "per-block spread case"; cat q_spread.log; }
+sp() { "$PY" -c "import json;d=json.load(open('q_spread.json'))['samples']['s1'];print($1)"; }
+assert_close "both unique blocks contribute (2 blocks)" \
+  "$(sp "d['solve']['unique_blocks']['pTheta']['n_blocks']")" 2 0
+assert_close "both unique blocks' bp retained" \
+  "$(sp "d['solve']['unique_blocks']['pTheta']['retained_bp']")" 1800 2
+assert_close "low-depth unique block reported on its own" \
+  "$(sp "d['solve']['unique_blocks']['pTheta']['min']")" 0.69 0.05
+assert_close "high-depth unique block reported on its own" \
+  "$(sp "d['solve']['unique_blocks']['pTheta']['max']")" 1.03 0.05
+assert_close "spread reported as a relative range" \
+  "$(sp "d['solve']['unique_blocks']['pTheta']['relative_range']")" 0.39 0.06
+assert_close "reported copy number is their bp-weighted mean" \
+  "$(sp "d['copies_per_haploid']['pTheta']")" 0.86 0.05
+assert_has "disagreeing blocks flagged, not silently averaged" q_spread.md \
+  "pTheta's unique blocks disagree: 2 blocks give"
+assert_has "spread caveat reaches the top of the report" <(head -12 q_spread.md) \
+  "unique blocks disagree"
+assert_has "per-block table rendered" q_spread.md "Per-unique-block estimates"
+# 150 bp of unique sequence: kept and used, with a low-confidence flag
+got=$(sp "d['solve']['source']['pIota']")
+if [ "$got" = "unique block" ]; then
+  ok "small unique block no longer dropped on size (source: unique block)"
+else
+  bad "small unique block was excluded (source: $got)"
+fi
+assert_close "its retained bp counted in full" \
+  "$(sp "d['solve']['unique_blocks']['pIota']['retained_bp']")" 150 2
+assert_has "thin unique sequence still flagged" q_spread.md \
+  "pIota's copy number rests on only 150 bp"
+
+echo
+echo "== Stage 3: trim_boundaries policy and deprecated keys =="
+# The rule, not a fixture: an end abutting a same-membership block is not
+# trimmed; an end abutting a different class, or a contig terminus, is.
+"$PY" - "$SCRIPTS" <<'EOF' >trim.log 2>&1
+import sys
+sys.path.insert(0, sys.argv[1])
+from copy_number import _trim_flags
+B = [{"membership": ["A"]}, {"membership": ["A", "B"]}, {"membership": ["A"]}]
+lin = _trim_flags(B, False)
+assert lin == [(True, True), (True, True), (True, True)], lin
+same = _trim_flags([{"membership": ["A"]}, {"membership": ["A"]}], False)
+assert same == [(True, False), (False, True)], same
+circ = _trim_flags([{"membership": ["A"]}, {"membership": ["A", "B"]},
+                    {"membership": ["A"]}], True)
+assert circ == [(False, True), (True, True), (True, False)], circ
+print("OK")
+EOF
+if grep -q "^OK$" trim.log; then
+  ok "trim_boundaries trims class edges and termini, not same-membership joins"
+else
+  bad "trim_boundaries policy"; cat trim.log
+fi
+"$PY" "$SCRIPTS/copy_number.py" cfg_concat.json --edge-trim 400 \
+  --min-class-bp 200 --trim-mode block-edge --json q_depr.json \
+  >q_depr.log 2>&1 && ok "deprecated keys still accepted" || bad "deprecated keys"
+assert_has "--edge-trim deprecation named" q_depr.log "edge-trim is deprecated"
+assert_has "--trim-mode deprecation named" q_depr.log "trim-mode is deprecated"
+assert_has "min_class_bp deprecation named" q_depr.log \
+  "min_class_bp is deprecated and ignored"
+
+echo
+echo "== Final stage: reconcile_sites, two constructs sharing backbone =="
+# pDelta 1.5 copies and pEpsilon 28 copies. Every shared locus is reported by
+# BOTH mappings and must collapse to one; attribution must come out of the
+# priority order, not out of read support.
+for m in pDelta pEpsilon; do
+  case $m in pDelta) e=1200 ;; pEpsilon) e=3000 ;; esac
+  "$PY" "$SCRIPTS/classify_junctions.py" --identity identity_concat.json \
+    --mapping $m --modality nhej --vector-ends $e \
+    --table s1="junctions_recon_${m}_s1.tsv" \
+    --table s2="junctions_recon_${m}_s2.tsv" \
+    --out-loci "loci_recon_$m.tsv" --out-junctions "junc_recon_$m.tsv" \
+    >"s2_recon_$m.log" 2>&1 || bad "classify_junctions for $m"
+done
+cat > cfg_recon.json <<'JSON'
+{"identity":"identity_concat.json","genome_size":3100000000,"read_length":150,
+ "ploidy":2,"primary_mapping":"pEpsilon","modality":"nhej",
+ "samples":{"s1":{"dedup_pairs":323640000,"baseline_depth":29.0,
+   "depth_files":{"pDelta":"depth_concat_pDelta.txt",
+                  "pEpsilon":"depth_concat_pEpsilon.txt"}}},
+ "mappings":{"pDelta":{"junctions":"junc_recon_pDelta.tsv"},
+             "pEpsilon":{"junctions":"junc_recon_pEpsilon.tsv"}}}
+JSON
+"$PY" "$SCRIPTS/copy_number.py" cfg_recon.json --json cn_recon.json \
+  >cn_recon.log 2>&1 && ok "copy number for the reconcile case" \
+  || { bad "copy number for the reconcile case"; cat cn_recon.log; }
+
+# --min-copies-per-site 10 is the measured copies per site of a concatemer
+# line; it is what makes the ceiling binding rather than nominal.
+"$PY" "$SCRIPTS/reconcile_sites.py" --identity identity_concat.json \
+  --loci pDelta=loci_recon_pDelta.tsv --loci pEpsilon=loci_recon_pEpsilon.tsv \
+  --copy-number cn_recon.json --ploidy 2 --min-copies-per-site 10 \
+  --vector-ends pDelta=1200 --vector-ends pEpsilon=3000 \
+  --out-called called.tsv --out-subthreshold sub.tsv \
+  --summary site_summary.json --md site_summary.md >recon.log 2>&1 \
+  && ok "reconcile_sites ran" || { bad "reconcile_sites"; cat recon.log; }
+rc() { "$PY" -c "import json;d=json.load(open('site_summary.json'));print($1)"; }
+
+# 1. collapse: every shared locus was reported twice and must be ONE event
+assert_close "entries read from both mapping tables" "$(rc "d['n_entries']")" 15 0
+assert_close "cross-mapping duplicates collapsed" "$(rc "d['n_unified']")" 9 0
+assert_has "collapse stated in the report" site_summary.md \
+  "6 duplicate report\(s\) of one junction were collapsed"
+
+# 2. retention: the single-read single-sample locus is the tail, not a site
+assert_close "called loci" "$(rc "d['n_called']")" 8 0
+assert_close "sub-threshold tail separated" "$(rc "d['n_sub']")" 1 0
+assert_has "the tail locus is in the sub-threshold table" sub.tsv "^chr13"
+assert_lacks "the tail locus is NOT in the called table" called.tsv "^chr13"
+assert_has "tail excluded for both reasons" sub.tsv "min-reads.*min-samples"
+
+# 3. attribution by priority
+assert_has "unique-sequence locus is certain" called.tsv \
+  "^chr2	5000000.*pEpsilon	certain	unique"
+assert_has "vector-end locus goes to the construct whose end it is" called.tsv \
+  "^chr5	2000000.*pDelta	inferred	vector-end"
+assert_has "shared locus placed by the ceiling, not by support" called.tsv \
+  "^chr6	1000000.*pEpsilon	inferred	copy-ceiling"
+assert_has "the locus beyond every ceiling is unresolved" called.tsv \
+  "^chr12	1000000	1000000	1			unresolved		pDelta,pEpsilon"
+assert_has "unresolved locus names its candidates" called.tsv \
+  "^chr12.*pDelta,pEpsilon"
+assert_has "unresolved explained by the full ceilings" site_summary.md \
+  "ceiling is already full"
+
+# no construct may exceed its copy-number ceiling
+"$PY" - <<'EOF' >cap.log 2>&1
+import json
+d = json.load(open("site_summary.json"))
+for n, c in d["per_construct"].items():
+    cap = c["ceiling"]
+    assert cap is not None, n
+    assert c["attributed"] <= cap, (n, c["attributed"], cap)
+print("OK")
+EOF
+if grep -q "^OK$" cap.log; then
+  ok "no construct exceeds its copy-number ceiling"
+else
+  bad "a construct was given more sites than its ceiling"; cat cap.log
+fi
+assert_close "high-copy construct holds exactly its ceiling" \
+  "$(rc "d['per_construct']['pEpsilon']['attributed']")" 6 0
+assert_close "low-copy construct holds exactly its ceiling" \
+  "$(rc "d['per_construct']['pDelta']['attributed']")" 1 0
+assert_close "ceiling of the low-copy construct is 1, not 6" \
+  "$(rc "d['per_construct']['pDelta']['ceiling']")" 1 0
+assert_close "exactly one unresolved locus" "$(rc "len(d['unresolved'])")" 1 0
+
+# no locus may be listed under two constructs
+"$PY" - <<'EOF' >dup.log 2>&1
+import csv
+from collections import Counter
+rows = list(csv.DictReader(open("called.tsv"), delimiter="\t"))
+seen = Counter((r["contig"], r["start"]) for r in rows)
+dups = [k for k, v in seen.items() if v > 1]
+assert not dups, "locus listed more than once: %s" % dups
+for r in rows:
+    assert "," not in r["construct"], r
+    if r["confidence"] == "unresolved":
+        assert r["construct"] == "", r
+    else:
+        assert r["construct"], r
+print("OK")
+EOF
+if grep -q "^OK$" dup.log; then
+  ok "no locus appears under two constructs, or twice under one"
+else
+  bad "a locus was listed under two constructs"; cat dup.log
+fi
+assert_has "site count is a bounded range per construct" site_summary.md \
+  "\*\*2-6\*\*"
+assert_has "report says it is authoritative, not to be re-derived" \
+  site_summary.md "do not re-derive it"
+
+echo
+echo "== Final stage: equal copy number must NOT force attribution =="
+# Same loci, two constructs of EQUAL copy number. Nothing but the copy number
+# distinguishes the shared loci, so the procedure must decline to attribute
+# them rather than invent a winner.
+"$PY" "$SCRIPTS/reconcile_sites.py" --identity identity_concat.json \
+  --loci pDelta=loci_recon_pDelta.tsv --loci pEpsilon=loci_recon_pEpsilon.tsv \
+  --copies pDelta=10 --copies pEpsilon=10 --ploidy 2 \
+  --vector-ends pDelta=1200 --vector-ends pEpsilon=3000 \
+  --out-called called_sym.tsv --summary sym.json --md sym.md >sym.log 2>&1 \
+  && ok "equal-copy case ran" || { bad "equal-copy case"; cat sym.log; }
+sy() { "$PY" -c "import json;d=json.load(open('sym.json'));print($1)"; }
+assert_close "every shared locus is unresolved when copies are equal" \
+  "$(sy "len(d['unresolved'])")" 5 0
+assert_close "no shared locus attributed by the ceiling to pDelta" \
+  "$(sy "d['per_construct']['pDelta']['copy_ceiling']")" 0 0
+assert_close "no shared locus attributed by the ceiling to pEpsilon" \
+  "$(sy "d['per_construct']['pEpsilon']['copy_ceiling']")" 0 0
+assert_has "equal copy numbers given as the reason" sym.md \
+  "within 2(\.[0-9])?x"
+assert_close "sequence-level evidence still attributed" \
+  "$(sy "d['per_construct']['pEpsilon']['certain']")" 2 0
+assert_close "vector-end evidence still attributed" \
+  "$(sy "d['per_construct']['pDelta']['vector_end']")" 1 0
+
+echo
+echo "== Final stage: the ceiling outranks read support =="
+# pDelta has 100x the support of pEpsilon at every shared locus, but only
+# pEpsilon's copy number can source them. Support must not win.
+"$PY" - <<'EOF'
+import csv
+rows = list(csv.DictReader(open("loci_recon_pDelta.tsv"), delimiter="\t"))
+for r in rows:
+    for k in r:
+        if k.startswith("support_") and r[k]:
+            r[k] = str(int(r[k]) * 100)
+with open("loci_recon_pDelta_loud.tsv", "w", newline="") as fh:
+    w = csv.DictWriter(fh, fieldnames=rows[0].keys(), delimiter="\t")
+    w.writeheader(); w.writerows(rows)
+EOF
+"$PY" "$SCRIPTS/reconcile_sites.py" --identity identity_concat.json \
+  --loci pDelta=loci_recon_pDelta_loud.tsv \
+  --loci pEpsilon=loci_recon_pEpsilon.tsv \
+  --copy-number cn_recon.json --ploidy 2 --min-copies-per-site 10 \
+  --vector-ends pDelta=1200 --vector-ends pEpsilon=3000 \
+  --out-called called_loud.tsv --summary loud.json >loud.log 2>&1 \
+  && ok "support-inflated case ran" || { bad "support-inflated case"; cat loud.log; }
+assert_close "inflated support does not lift pDelta past its ceiling" \
+  "$("$PY" -c "import json;print(json.load(open('loud.json'))['per_construct']['pDelta']['attributed'])")" 1 0
+assert_has "shared loci still go to the construct with the copies" \
+  called_loud.tsv "^chr6	1000000.*pEpsilon	inferred	copy-ceiling"
+
+echo
+echo "== Final stage: guard rails =="
+"$PY" "$SCRIPTS/reconcile_sites.py" --identity identity_concat.json \
+  --loci pDelta=loci_recon_pDelta.tsv --copy-number cn_recon.json \
+  --min-samples 3 --summary one.json >one.log 2>&1 \
+  && ok "impossible --min-samples does not crash" || bad "impossible --min-samples"
+assert_has "it says no locus can be called, loudly" one.log \
+  "only 2 sample\(s\) were supplied, so NO locus can be called"
+"$PY" "$SCRIPTS/reconcile_sites.py" --identity identity_concat.json \
+  --loci pDelta=loci_recon_pDelta.tsv --loci pEpsilon=loci_recon_pEpsilon.tsv \
+  --summary nocn.json >nocn.log 2>&1 \
+  && ok "missing copy number does not crash" || bad "missing copy number"
+assert_has "no copy number means no ceiling attribution, and says so" nocn.log \
+  "No copy number for pDelta, pEpsilon"
+assert_has "assumed ploidy flagged" nocn.log "PLOIDY ASSUMED"
+"$PY" "$SCRIPTS/reconcile_sites.py" --identity identity_concat.json \
+  --loci pNotReal=loci_recon_pDelta.tsv >bad_recon.log 2>&1 \
+  && bad "unknown construct accepted" \
+  || assert_has "unknown construct refused clearly" bad_recon.log \
+       "not in the identity map"
+"$PY" "$SCRIPTS/reconcile_sites.py" --identity identity_concat.json \
+  --loci pDelta=junc_recon_pDelta.tsv >wrongfile.log 2>&1 \
+  && bad "a junction table accepted in place of a loci table" \
+  || assert_has "wrong input file refused with the fix named" wrongfile.log \
+       "written by --out-loci"
+
+echo
 echo "=============================="
 echo " passed: $PASS   failed: $FAIL"
 echo "=============================="

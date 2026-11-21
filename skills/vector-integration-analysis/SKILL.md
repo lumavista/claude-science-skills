@@ -54,6 +54,13 @@ Per-mechanism signatures: `references/modalities.md`.
 
 ## Workflow
 
+```
+construct_identity  ->  classify_junctions (per mapping)  ->  copy_number
+                                                                   |
+                                   reconcile_sites  <--------------+
+                                   (the authoritative site result)
+```
+
 Formats, column mapping, clip conventions, naming: `references/input-formats.md`
 — read it if a table fails to parse or the clip side is uninterpretable.
 
@@ -104,7 +111,9 @@ python scripts/classify_junctions.py --identity identity.json \
 ```
 
 Repeat per separately mapped construct — comparing mappings is what resolves
-ambiguous junctions.
+ambiguous junctions. These `loci_<mapping>.tsv` tables are **intermediates**:
+Stage 4 collapses them into the one called-site table. A site in shared
+sequence appears in every mapping's table, so never count them directly.
 
 `--vector-ends` are the defined ends of the delivered molecule in that
 construct's numbering (restriction site, LTR or ITR termini), and **their
@@ -145,35 +154,78 @@ weighted least squares, unconstrained, **as a cross-check only**. A negative
 solution, or shared blocks carrying less depth than their members' unique
 blocks predict, means the additive model is incomplete. In concatemers that is
 usually backbone loss. It is reported as a caveat, never clamped to zero.
+Each construct's **individual unique-block estimates and their spread** are
+reported beside the mean, and a construct resting on little sequence, or on
+blocks that disagree, is a flagged answer rather than a silent one.
 Without depth the script falls back to the cross-mapping
 boundary estimator (only with exactly two constructs) or an explicit upper
 bound; **every fallback caveat is printed at the top of the report**, because an
 undecomposed number that looks measured is how this analysis goes wrong quietly.
 Derivations: `references/quantification.md`.
 
-### Stage 4 — reconcile, then count
+### Stage 4 — reconcile the loci into one called-site table
+
+```bash
+python scripts/reconcile_sites.py --identity identity.json \
+    --loci pAlpha=loci_pAlpha.tsv --loci pBeta=loci_pBeta.tsv \
+    --copy-number accounting.json --ploidy 2 --min-copies-per-site 1 \
+    --vector-ends pAlpha=1,8412 --vector-ends pBeta=1,7650 \
+    --out-called called_sites.tsv --out-subthreshold subthreshold_sites.tsv \
+    --summary site_summary.json --md site_summary.md
+```
+
+**This script is the site result. Report its output; do not re-derive it.**
+Locus collapse, retention and construct attribution are done here, by the
+script, not by the caller — deterministically, with every threshold a
+parameter. Do not assemble a site list from the per-mapping `loci_<mapping>.tsv`
+tables: those are intermediates, and every site in shared sequence appears in
+all of them.
+
+It does four things, in this order:
+
+1. **Collapses** across mappings. One junction reported by two mapping runs is
+   one event, never two. Support is combined as the per-sample maximum, not the
+   sum — the runs report the same reads.
+2. **Retains** only loci with support ≥ `--min-reads` (5) in ≥ `--min-samples`
+   (2) independently prepared samples. The rest go to a sub-threshold table as
+   the single-read/noise tail, reported as a tail.
+3. **Attributes** by strict priority: **unique** sequence → `certain`;
+   else a **declared vector end** of exactly one construct → `inferred`; else
+   the **copy-number ceiling**, `ceil(copies × ploidy ÷ min_copies_per_site)`,
+   as a **hard cap**; else **unresolved**, listed once with its candidates
+   named and assigned to nobody. No support ratio or cross-sample scaling
+   enters attribution, so none can override the ceiling: a construct measured
+   at N copies cannot be given more ceiling-attributed sites than N permits.
+4. **Counts**: per construct a floor of certain + vector-end loci, a bounded
+   range up to the ceiling, and the unresolved count stated separately.
+
+Rules, parameters and the argument for each: `references/attribution.md`.
+
+Then check the arithmetic agrees with the DNA:
 
 ```
-copies per haploid ÷ copies per site ≈ number of loci detected
+copies per haploid ÷ copies per site ≈ number of called sites
 ```
 
-Agreement within ~25% means the detected loci account for the DNA present; a
+Agreement within ~25% means the called sites account for the DNA present; a
 large shortfall means missing sites or an extrachromosomal pool, a large excess
-means double-counting — check flank pairing first. **Calibrate** against any
-locus of independently known structure (both flanks, construct-unique sequence,
-single copy): agreement validates the conversion factor, the anchor assumption
-and the ploidy estimate at once, and disagreement beyond ~2× means one of the
-three is wrong, usually ploidy.
+means double-counting — and collapse has already removed the commonest cause of
+that. **Calibrate** against any locus of independently known structure (both
+flanks, construct-unique sequence, single copy): agreement validates the
+conversion factor, the anchor assumption and the ploidy estimate at once, and
+disagreement beyond ~2× means one of the three is wrong, usually ploidy.
 
-### Stage 5 — tier the evidence, then report
+### Stage 5 — report what the reconciliation produced
 
-Never present one undifferentiated site list. Split into **certain** (vector
-side in construct-unique sequence) and **inferred** (vector side shared,
-assigned by argument — state the argument, its margin, and what would overturn
-it). Record which strands support each inferred locus: position at a defined
-vector end, a footprint matching the modality, cross-sample scaling consistent
-with that construct's cohort, or none. Single-strand loci are the validation
-priorities. Structure in `assets/report_template.md`; bench follow-up in
+Report `called_sites.tsv` and the site summary as they stand. The evidence
+tiers are already in them: **certain** (vector side in construct-unique
+sequence), **inferred** (vector-end or copy-ceiling, with the reason recorded
+per locus), **unresolved** (candidates named, attributed to nobody). Do not
+re-tier, re-argue or redistribute the unresolved loci — they are the validation
+priorities, and one junction PCR settles each. Quote the bounded site range and
+the unresolved count together; never a single undifferentiated number.
+
+Structure in `assets/report_template.md`; bench follow-up in
 `references/validation.md`.
 
 ## Rules and failure modes
@@ -186,6 +238,15 @@ priorities. Structure in `assets/report_template.md`; bench follow-up in
   unknown DNA. Not rearrangements, but quantitatively useful, so keep them.
 - **Junction count ≠ site count ≠ copy number.** An array of *n* copies gives 2
   host flanks and *n*−1 internal junctions; reconcile the three.
+- **One junction, two mapping runs, one site.** A site in shared sequence is
+  reported by every mapping run that saw it. Collapsing those is
+  `reconcile_sites.py`'s first step; counting the per-mapping tables instead
+  doubles the site count and lists the same locus under two constructs.
+- **The copy-number ceiling beats every support argument.** A construct
+  measured at N copies per haploid cannot hold more ceiling-attributed sites
+  than `ceil(N × ploidy ÷ min_copies_per_site)`. Support ratios and
+  cross-sample scaling may break ties among constructs that are all admissible
+  under the ceiling; they may never fill a construct past it.
 - **Most sites show only one flank** — a flank in repetitive sequence cannot be
   placed uniquely, so assuming full recovery demands twice the real site count.
 - **Clip convention.** `R` = reference continues to that base, then novel
@@ -205,13 +266,15 @@ priorities. Structure in `assets/report_template.md`; bench follow-up in
 - **Read support scales with copy number, not clone abundance**; a clonal line
   has one clone, so relative-abundance and Gini metrics do not apply.
 - **Never state a site count without its uncertainty**, or without saying which
-  loci are certain and which inferred.
+  loci are certain and which inferred. `reconcile_sites.py` reports the range
+  and the unresolved count; pass both through.
 
 ## Reference material
 
 - `modalities.md` — delivery route; fingerprint vs paperwork conflict
 - `input-formats.md` — parse failures, column or clip-side resolution
 - `quantification.md` — deriving or defending any number
+- `attribution.md` — the site priority order, the copy-number ceiling
 - `artefacts.md` — classifying junctions, confirming a flag
 - `report-qc.md` — Stage 0; report disagrees with the tables
 - `validation.md` — junction PCR, ddPCR, long-read follow-up

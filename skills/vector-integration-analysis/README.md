@@ -40,8 +40,9 @@ design, AAV episomal configuration, expression analysis. See
 | 0 | — | deliverable QC (`references/report-qc.md`) |
 | 1 | `construct_identity.py` | per-base construct membership map, attributable fraction, predicted cross-mapping boundaries naming which construct clips where, coordinate correspondence |
 | 2 | `classify_junctions.py` | classified junctions, artefact flags, delivery fingerprint, target-site footprint check, locus table with flanks paired and evidence tiered, cross-sample ratios with CIs |
-| 3–4 | `copy_number.py` | per-construct copy number solved from per-base depth, copies per site, implied site count, reconciliation, flank detection, calibration |
-| 5 | — | evidence tiering and reporting (`assets/report_template.md`) |
+| 3 | `copy_number.py` | per-construct copy number solved from per-base depth, per-unique-block estimates and their spread, copies per site, implied site count, flank detection, calibration |
+| 4 | `reconcile_sites.py` | **the called-site table**: cross-mapping collapse, retention, construct attribution by strict priority, bounded site count per construct, sub-threshold tail |
+| 5 | — | reporting what Stage 4 produced (`assets/report_template.md`) |
 
 ## Quick start
 
@@ -63,7 +64,46 @@ python scripts/classify_junctions.py --identity identity.json \
 # 3. copy number, architecture, site accounting
 cp assets/copy_number_config.example.json config.json   # fill in every value
 python scripts/copy_number.py config.json --md accounting.md --json accounting.json
+
+# 4. ONE called-site table: collapse across mappings, retain, attribute
+python scripts/reconcile_sites.py --identity identity.json \
+    --loci pAlpha=loci_pAlpha.tsv --loci pBeta=loci_pBeta.tsv \
+    --copy-number accounting.json --ploidy 2 \
+    --vector-ends pAlpha=1,8412 --vector-ends pBeta=1,7650 \
+    --out-called called_sites.tsv --out-subthreshold subthreshold_sites.tsv \
+    --summary site_summary.json --md site_summary.md
 ```
+
+Stage 4 is the site result — report it rather than re-deriving loci by hand.
+
+## The site result is produced, not argued
+
+`reconcile_sites.py` owns locus collapse, retention and attribution, because
+leaving them to the caller has produced wrong answers in both available
+directions: shared-backbone loci over-assigned to a low-copy construct by
+support ratio, and the two mapping runs never collapsed, so every shared site
+was listed twice, once under each construct.
+
+- **Collapse.** A junction reported by two mapping runs is one event. Support
+  is combined as the per-sample maximum, never summed — the runs report the
+  same reads.
+- **Retain.** Support ≥ `--min-reads` (5) in ≥ `--min-samples` (2)
+  independently prepared samples. The rest is reported as the single-read tail,
+  not quietly dropped and not counted.
+- **Attribute, by strict priority.** Unique sequence → `certain`. Else exactly
+  one construct's declared vector end → `inferred`. Else the copy-number
+  ceiling, `ceil(copies × ploidy ÷ min_copies_per_site)`, as a **hard cap**.
+  Else `unresolved`: listed once, candidates named, attributed to nobody.
+- **The ceiling beats support.** No support ratio or cross-sample scaling
+  enters attribution, so none can override it. A construct measured at N copies
+  cannot be given more ceiling-attributed sites than N permits, and with two
+  constructs of similar copy number the shared loci come out `unresolved` —
+  which is the correct answer, not a gap.
+- **Count.** Per construct: a floor of certain + vector-end loci, a bounded
+  range up to the ceiling, unresolved stated separately.
+
+Every threshold is a documented parameter; nothing is tuned to a dataset. See
+`references/attribution.md`.
 
 ## Copy number: measured, not estimated
 
@@ -129,7 +169,7 @@ Python 3.8+. No third-party packages.
 tests/run_tests.sh
 ```
 
-66 assertions over synthetic fixtures. Every sequence used in testing is
+144 assertions over synthetic fixtures. Every sequence used in testing is
 pseudo-random and generated at run time — **no real vector, plasmid or genome
 sequence is stored in this repository.**
 
@@ -140,8 +180,18 @@ strand column and an absent column; host contigs whose names resemble construct
 names; each artefact class, and the self-junction that must *not* be flagged;
 integrase delivery, where LTR-terminus junctions must not be discarded as
 reference-edge artefacts; a declared modality contradicted by the fingerprint;
-the copy-number solve against ground truth; and every path where a caveat must
-reach the rendered report rather than only the JSON.
+the copy-number solve against ground truth; a construct whose unique blocks
+disagree, where both must contribute and the spread must be reported; and every
+path where a caveat must reach the rendered report rather than only the JSON.
+
+For the reconciliation it asserts the properties that matter rather than the
+numbers: no locus appears under two constructs; no construct exceeds its
+copy-number ceiling; cross-mapping duplicates collapse to one site; the
+single-read tail stays out of the called set; a locus at one construct's
+declared vector end goes to that construct; read support inflated a
+hundred-fold does not move a locus past a full ceiling; and with two
+**equal-copy** constructs the shared loci come out unresolved — proof that the
+procedure declines to attribute when the data cannot support it.
 
 ## Reference material
 
@@ -150,6 +200,7 @@ reach the rendered report rather than only the JSON.
 | `references/modalities.md` | settling the delivery route, or the fingerprint disagrees with the paperwork |
 | `references/input-formats.md` | a table fails to parse, columns resolve wrongly, or the clip side is rejected |
 | `references/quantification.md` | deriving or defending any number |
+| `references/attribution.md` | the site priority order, the copy-number ceiling, why a locus is unresolved |
 | `references/artefacts.md` | classifying junctions; confirming or overriding a flag |
 | `references/report-qc.md` | Stage 0, and whenever a report disagrees with the tables |
 | `references/validation.md` | designing junction PCR, ddPCR or long-read follow-up |

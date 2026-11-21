@@ -73,6 +73,11 @@ applies.
 
 ## 5. What is certain, what is inferred
 
+<!-- Take this straight from reconcile_sites.py: called_sites.tsv and the site
+     summary already carry the tier, the evidence and the reason per locus.
+     Quote the bounded range and the unresolved count together. Do not re-tier
+     or redistribute the unresolved loci. -->
+
 **Certain (<N> loci).** Vector side in sequence unique to one construct.
 
 **Inferred (<N> loci).** State the argument as numbered steps, give its margin,
