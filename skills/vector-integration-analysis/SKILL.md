@@ -65,9 +65,13 @@ constructs were in the mapping reference** (fewer than the line carries leaves
 every shared-sequence junction ambiguous until Stage 1); **whether junction
 support is post-deduplication** (if not, copy numbers inflate several-fold); and
 **per-base depth**, which separates a measured copy number from a bounded guess
-— ask for `samtools depth -a` if it was not delivered. Then compute
+— ask for `samtools depth -a` if it was not delivered, together with the
+**genome-median per-base depth** from the same BAM. Then compute
 `genome_coverage = dedup_pairs × 2 × read_length ÷ genome_size`; every
-downstream quantity is relative to it.
+downstream quantity is relative to it. For copy number, the genome median
+(`baseline_depth` in the config) is the better single-genome baseline: it is
+filtered the same way as the vector depth, while the read-count figure is not
+and typically runs high.
 
 ### Stage 1 — construct identity map
 
@@ -133,10 +137,15 @@ python scripts/copy_number.py config.json --md accounting.md --json accounting.j
 Mean coverage over a shared reference is an upper bound, not a copy number — it
 sums the depth of every construct carrying that sequence.
 
-**Prefer the measured route.** With per-base depth, each membership class in the
-identity map gives one equation (depth over bases carried by constructs *S* =
-summed depth of those constructs), solved by weighted least squares for any
-number of constructs. Without depth the script falls back to the cross-mapping
+**Prefer the measured route.** With per-base depth, each construct's copy number
+is the depth over the bases only it carries (its unique blocks), read directly.
+Every membership class also gives one equation (depth over bases carried by
+constructs *S* = summed depth of those constructs). That system is solved by
+weighted least squares, unconstrained, **as a cross-check only**. A negative
+solution, or shared blocks carrying less depth than their members' unique
+blocks predict, means the additive model is incomplete. In concatemers that is
+usually backbone loss. It is reported as a caveat, never clamped to zero.
+Without depth the script falls back to the cross-mapping
 boundary estimator (only with exactly two constructs) or an explicit upper
 bound; **every fallback caveat is printed at the top of the report**, because an
 undecomposed number that looks measured is how this analysis goes wrong quietly.

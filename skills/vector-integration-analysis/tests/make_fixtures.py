@@ -22,6 +22,15 @@ TRUE_DEPTHS = {"pAlpha": 290.0, "pBeta": 116.0, "pGamma": 58.0}
 GENOME_COVERAGE = 29.0           # -> true copies/haploid 10, 4, 2
 DEDUP_PAIRS = 299_666_666        # gives C = 29.0 at read_length 150
 
+# Concatemer-deficit case: two constructs sharing ~4.6 kb of backbone, one at
+# low copy and one at high copy, with the shared blocks carrying 15% less depth
+# than additivity predicts (backbone loss in concatemers). An all-block solve
+# drives the low-copy construct negative; clamping that reported it as 0.
+CONCAT_COPIES = {"pDelta": 1.5, "pEpsilon": 28.0}
+CONCAT_SHARED_FACTOR = 0.85      # observed / (A + B) over shared blocks
+CONCAT_DEDUP_PAIRS = 323_640_000  # read-count C = 31.32x, ~8% above the 29.0x
+                                  # genome median: the read-count bias
+
 
 def randseq(rng: random.Random, n: int) -> str:
     return "".join(rng.choice("ACGT") for _ in range(n))
@@ -152,12 +161,48 @@ def main() -> int:
                     val = max(0, round(drng.gauss(expected, expected ** 0.5)))
                     fh.write("%s\t%d\t%d\n" % (mapping, p, val))
 
+    write_concatemer_fixture(out, ident_script=script)
+
     print("fixtures written to %s" % out)
     print("true copies per haploid: %s"
           % {k: round(v / GENOME_COVERAGE, 2) for k, v in TRUE_DEPTHS.items()})
     print("dedup_pairs for C=%.1fx at read_length 150: %d"
           % (GENOME_COVERAGE, DEDUP_PAIRS))
     return 0
+
+
+def write_concatemer_fixture(out: str, ident_script: str) -> None:
+    """Two constructs, shared backbone under-represented by 15%."""
+    import json
+    import subprocess
+    rng = random.Random(SEED + 2)
+    backbone = randseq(rng, 3800)
+    marker = randseq(rng, 800)                       # 4.6 kb shared in total
+    cargo = {"pDelta": randseq(rng, 1200), "pEpsilon": randseq(rng, 2000)}
+    for name, c in cargo.items():
+        seq = backbone + c + marker
+        feats = [("backbone", (1, 3800)),
+                 ("cargo-%s" % name[1:], (3801, 3800 + len(c))),
+                 ("selection marker", (3801 + len(c), len(seq)))]
+        with open(os.path.join(out, "%s.gb" % name), "w") as fh:
+            fh.write(genbank(name, seq, feats))
+    ident_path = os.path.join(out, "identity_concat.json")
+    subprocess.run([sys.executable, ident_script]
+                   + [os.path.join(out, "%s.gb" % n) for n in cargo]
+                   + ["--out", ident_path], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ident = json.load(open(ident_path))
+    true_depth = {n: c * GENOME_COVERAGE for n, c in CONCAT_COPIES.items()}
+    drng = random.Random(SEED + 3)
+    for mapping, d in ident["constructs"].items():
+        with open(os.path.join(out, "depth_concat_%s.txt" % mapping), "w") as fh:
+            for b in d["blocks"]:
+                expected = sum(true_depth[n] for n in b["membership"])
+                if len(b["membership"]) > 1:
+                    expected *= CONCAT_SHARED_FACTOR
+                for p in range(b["start"], b["end"] + 1):
+                    val = max(0, round(drng.gauss(expected, expected ** 0.5)))
+                    fh.write("%s\t%d\t%d\n" % (mapping, p, val))
 
 
 if __name__ == "__main__":

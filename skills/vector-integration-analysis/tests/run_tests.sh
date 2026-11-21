@@ -174,6 +174,82 @@ for c in pAlpha:10 pBeta:4 pGamma:2; do
   assert_close "solved copies/haploid for $name" "$got" "$want" 0.3
 done
 
+assert_has "old config states the read-count baseline" q_measured.log \
+  "baseline: read-count estimate .*genome-median per-base depth .* preferred"
+
+echo
+echo "== Stage 3: concatemer backbone deficit (no silent clamped zero) =="
+# pDelta 1.5 and pEpsilon 28 copies share 4.6 kb of backbone carrying 15% less
+# depth than A+B. The old all-block solve with clamping reported pDelta as 0.
+# The read-count genome coverage is ~8% above the genome median (29.0x).
+cat > cfg_concat.json <<'JSON'
+{"identity":"identity_concat.json","genome_size":3100000000,"read_length":150,
+ "ploidy":2,"primary_mapping":"pDelta","modality":"nhej",
+ "samples":{"s1":{"dedup_pairs":323640000,"baseline_depth":29.0,
+   "depth_files":{"pDelta":"depth_concat_pDelta.txt",
+                  "pEpsilon":"depth_concat_pEpsilon.txt"}}},
+ "mappings":{"pDelta":{},"pEpsilon":{}}}
+JSON
+"$PY" "$SCRIPTS/copy_number.py" cfg_concat.json --md q_concat.md \
+  --json q_concat.json >q_concat.log 2>&1 \
+  && ok "concatemer-deficit case ran" || { bad "concatemer-deficit case"; cat q_concat.log; }
+jq_concat() { "$PY" -c "import json;d=json.load(open('q_concat.json'))['samples']['s1'];print($1)"; }
+got=$(jq_concat "d['copies_per_haploid']['pDelta']")
+assert_close "low-copy construct from its unique block, not 0" "$got" 1.5 0.15
+got=$(jq_concat "d['copies_per_haploid']['pEpsilon']")
+assert_close "high-copy construct close to truth" "$got" 28 1.0
+got=$(jq_concat "d['solve']['closure']['deficit_pct']")
+assert_close "shared-block deficit reported near -15%" "$got" -15 2
+"$PY" - <<'EOF' >/dev/null 2>&1
+import json, sys
+d = json.load(open("q_concat.json"))["samples"]["s1"]
+cps = d["copies_per_haploid"]
+# no reported copy number may be a clamped zero; the diagnostic stays negative
+ok = all(v is None or v > 0.05 for v in cps.values()) \
+     and min(d["solve"]["wls_depths"].values()) < 0
+sys.exit(0 if ok else 1)
+EOF
+[ $? -eq 0 ] && ok "no silent clamped zero; negative solve kept as diagnostic" \
+             || bad "a copy number was clamped to zero or the solve was clamped"
+assert_has "negative solve raised as a caveat, not clamped" q_concat.md \
+  "ADDITIVE MODEL INCOMPLETE.*backbone"
+assert_has "caveat printed before the numbers" <(head -8 q_concat.md) \
+  "ADDITIVE MODEL INCOMPLETE"
+assert_has "genome-median baseline used and stated" q_concat.log \
+  "baseline: genome-median per-base depth 29.00x"
+assert_has "closure table in the report" q_concat.md "Shared-block closure: -1[0-9]\."
+
+"$PY" -c "
+import json; c=json.load(open('cfg_concat.json'))
+del c['samples']['s1']['baseline_depth']; json.dump(c, open('cfg_concat_rc.json','w'))"
+"$PY" "$SCRIPTS/copy_number.py" cfg_concat_rc.json --json q_concat_rc.json \
+  >q_concat_rc.log 2>&1 && ok "no baseline_depth falls back to read count" \
+  || bad "read-count fallback"
+got=$("$PY" -c "import json;print(json.load(open('q_concat_rc.json'))['samples']['s1']['copies_per_haploid']['pEpsilon'])")
+assert_close "read-count baseline biases low by ~8%" "$got" 25.9 0.6
+
+echo
+echo "== Stage 3: edge-trim mode and low unique-bp warning =="
+"$PY" "$SCRIPTS/copy_number.py" cfg_concat.json --edge-trim 400 \
+  --md q_trim_be.md >q_trim_be.log 2>&1 && ok "block-edge trim (default) ran" \
+  || bad "block-edge trim"
+assert_has "thin unique block named with its bp" q_trim_be.md \
+  "pDelta's copy number rests on only 399 bp"
+"$PY" "$SCRIPTS/copy_number.py" cfg_concat.json --edge-trim 400 \
+  --trim-mode contig-end --md q_trim_ce.md --json q_trim_ce.json \
+  >q_trim_ce.log 2>&1 && ok "contig-end trim ran" || bad "contig-end trim"
+assert_lacks "contig-end keeps the unique block, no thin-block warning" \
+  q_trim_ce.md "rests on only"
+got=$("$PY" -c "import json;print(json.load(open('q_trim_ce.json'))['samples']['s1']['solve']['unique_bp']['pDelta'])")
+assert_close "contig-end retains the whole interior unique block" "$got" 1199 1
+"$PY" -c "
+import json; c=json.load(open('cfg_concat.json'))
+del c['samples']['s1']['depth_files']['pEpsilon']; json.dump(c, open('cfg_concat_one.json','w'))"
+"$PY" "$SCRIPTS/copy_number.py" cfg_concat_one.json --md q_concat_one.md \
+  >q_concat_one.log 2>&1 && ok "construct with no unique class ran" || bad "no unique class"
+assert_has "solve fallback for that construct is flagged" q_concat_one.md \
+  "pEpsilon .*WLS solve \(FLAGGED"
+
 echo
 echo "== Stage 3: fallback with 3 constructs must SHOUT =="
 "$PY" -c "

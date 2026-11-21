@@ -14,12 +14,17 @@ missing or there is an extrachromosomal pool.
 Two routes to copy number, in strict order of preference
 --------------------------------------------------------
 **Measured (preferred).** With per-base depth over each vector reference
-(`samtools depth -a`), every membership class in the identity map gives one
-equation -- depth over bases carried by constructs S equals the summed depth of
-those constructs -- and the whole set is solved at once by weighted least
-squares. This works for any number of constructs, needs no bespoke estimator,
-and is a measurement rather than an inference. One `samtools depth` command
-produces it; always ask the provider for it.
+(`samtools depth -a`), each construct's copy number is the depth over the
+bases only it carries -- its singleton membership class in the identity map --
+read directly, with no solve. Every membership class also gives one equation
+(depth over bases carried by constructs S = summed depth of those constructs);
+that stacked system is solved UNCONSTRAINED by weighted least squares as a
+cross-check, and the shared classes are checked for closure against the
+unique-block estimates. A negative solution or a shared-block deficit means
+the additive model is incomplete (typically backbone loss in concatemers): it
+is reported, never clamped to zero. One `samtools depth` command produces the
+input; always ask the provider for it, and for the genome-median depth to use
+as the single-genome baseline (`baseline_depth`).
 
 **Inferred (fallback).** Without depth, mean coverage over a shared reference
 is a blend of every construct carrying that sequence, so it is an **upper
@@ -85,6 +90,31 @@ def genome_coverage(dedup_pairs: float, read_length: int,
     return dedup_pairs * 2 * read_length / genome_size
 
 
+def choose_baseline(sample_cfg: Dict, C: float) -> Tuple[float, bool, str]:
+    """Single-genome baseline for copy number, and a line saying which.
+
+    The genome-median per-base depth is filtered exactly as the vector depth
+    is (same BAM, same samtools filters); the read-count C is not, and
+    typically runs high, biasing every copy number low. C itself is still what
+    the junction conversion factor uses, since junction support is a read
+    count.
+    """
+    bd = sample_cfg.get("baseline_depth")
+    if bd is not None and float(bd) > 0:
+        return float(bd), True, (
+            "copy-number baseline: genome-median per-base depth %.2fx "
+            "(baseline_depth; read-count estimate would be %.2fx). The "
+            "genome median is preferred because it is filtered identically "
+            "to the vector depth." % (float(bd), C))
+    return C, False, (
+        "copy-number baseline: read-count estimate %.2fx "
+        "(dedup_pairs x 2 x read_length / genome_size). A genome-median "
+        "per-base depth (`baseline_depth`) is preferred when available "
+        "because it is filtered identically to the vector depth; the "
+        "read-count figure typically runs high and biases copy numbers "
+        "low." % C)
+
+
 def conversion_factor(C: float, read_length: int, anchor: int) -> float:
     """Reads expected to support one junction present at one copy per haploid."""
     return max(0.0, C * (read_length - 2 * anchor) / read_length)
@@ -94,81 +124,259 @@ def conversion_factor(C: float, read_length: int, anchor: int) -> float:
 # measured route: solve all constructs from per-base depth
 # --------------------------------------------------------------------------
 
+TRIM_MODES = ("block-edge", "contig-end")
+NEGATIVE_COPIES_TOL = -0.1      # unconstrained solve below this is "material"
+MIN_UNIQUE_BP = 500             # retained unique bp below this is flagged
+
+
 def class_depths(ident: Dict, mapping: str, depth: Dict[int, float],
-                 edge_trim: int, min_class_bp: int
+                 edge_trim: int, trim_mode: str = "block-edge"
                  ) -> List[Tuple[List[str], float, int]]:
     """Mean depth over each membership class of one vector reference.
 
-    `edge_trim` bases are dropped from each end of every block. Within roughly
-    one read length of a block edge a read cannot lie wholly inside the block,
-    so cross-mapping tapers off and the observed depth there is neither the
-    shared nor the unique value. Trimming is what makes the measured and
-    inferred routes agree; untrimmed shared blocks are the reason naive
-    decomposition comes out several-fold high.
+    Returns (membership, mean depth, retained bp) for every class that keeps
+    at least one base; the caller decides which are large enough to use.
+
+    `trim_mode` decides where `edge_trim` bases are dropped:
+
+    * ``block-edge`` (default): from each end of every block. Within roughly
+      one read length of a membership boundary a read cannot lie wholly
+      inside the block, so cross-mapping tapers off and the depth there is
+      neither the shared nor the unique value. Untrimmed shared blocks are why
+      naive decomposition comes out several-fold high. The cost: small blocks
+      are discarded outright, which can leave a construct's unique estimate
+      resting on very little sequence.
+    * ``contig-end``: only within `edge_trim` of the linear reference termini,
+      where coverage falls off for every class alike. Keeps small unique
+      blocks, but leaves the boundary taper in, biasing unique-block depth up
+      and shared-block depth down by roughly read_length / block length.
     """
+    length = int(ident["constructs"][mapping]["length"])
     out: List[Tuple[List[str], float, int]] = []
     for cl in ident["constructs"][mapping]["membership_classes"]:
         vals: List[float] = []
         for a, b in cl["blocks"]:
-            lo, hi = a + edge_trim, b - edge_trim
-            if hi - lo + 1 < 20:
-                continue
+            if trim_mode == "contig-end":
+                lo, hi = max(a, 1 + edge_trim), min(b, length - edge_trim)
+                if hi < lo:
+                    continue
+            else:
+                lo, hi = a + edge_trim, b - edge_trim
+                if hi - lo + 1 < 20:
+                    continue
             vals += [depth[p] for p in range(lo, hi + 1) if p in depth]
-        if len(vals) >= min_class_bp:
+        if vals:
             out.append((cl["membership"], sum(vals) / len(vals), len(vals)))
     return out
 
 
-def solve_measured(cfg: Dict, ident: Dict, sample: str, edge_trim: int,
-                   min_class_bp: int) -> Optional[Dict]:
-    """Solve every construct's depth at once from per-base depth files."""
-    order: List[str] = list(cfg["mappings"])
-    files = (cfg["samples"][sample].get("depth_files") or {})
-    rows: List[List[float]] = []
-    y: List[float] = []
-    w: List[float] = []
-    used: List[Dict] = []
+def _collect_classes(cfg: Dict, ident: Dict, sample: str, order: List[str],
+                     edge_trim: int, min_class_bp: int, trim_mode: str
+                     ) -> Tuple[List[Dict], Dict[str, int]]:
+    """Read each depth file and return the usable membership classes.
 
-    base = cfg["_base"]
+    Each class is {mapping, membership, row, mean, bases}. Also returns the
+    retained unique bp per construct, counted even for classes too small to
+    use, so a thin unique set can be reported rather than silently dropped.
+    """
+    files = (cfg["samples"][sample].get("depth_files") or {})
+    classes: List[Dict] = []
+    unique_bp: Dict[str, int] = {}
     for mapping, path in files.items():
         if mapping not in ident["constructs"]:
             continue
-        p = path if os.path.isabs(path) else os.path.join(base, path)
+        p = path if os.path.isabs(path) else os.path.join(cfg["_base"], path)
         try:
             depth = read_depth_file(p, cfg["mappings"].get(mapping, {}).get("contig"))
         except (OSError, ValueError) as exc:
             print("  warning: %s" % exc, file=sys.stderr)
             continue
         for membership, mean, nbp in class_depths(ident, mapping, depth,
-                                                  edge_trim, min_class_bp):
+                                                  edge_trim, trim_mode):
+            if len(membership) == 1 and membership[0] in order:
+                unique_bp[membership[0]] = unique_bp.get(membership[0], 0) + nbp
             row = [1.0 if n in membership else 0.0 for n in order]
-            if not any(row):
+            if nbp < min_class_bp or not any(row):
                 continue
-            rows.append(row)
-            y.append(mean)
-            w.append(float(nbp))
-            used.append({"mapping": mapping, "membership": membership,
-                         "mean_depth": round(mean, 2), "bases": nbp})
+            classes.append({"mapping": mapping, "membership": membership,
+                            "row": row, "mean": mean, "bases": nbp})
+    return classes, unique_bp
 
-    if len(rows) < len(order):
-        return None
-    x = solve_wls(rows, y, w)
-    if x is None:
-        return None
 
-    resid = []
-    for row, yi, u in zip(rows, y, used):
-        pred = sum(r * v for r, v in zip(row, x))
-        resid.append({**u, "predicted_depth": round(pred, 2),
-                      "residual": round(yi - pred, 2)})
-    denom = sum(wi * yi * yi for wi, yi in zip(w, y)) or 1.0
-    rss = sum(wi * (yi - sum(r * v for r, v in zip(row, x))) ** 2
-              for row, yi, wi in zip(rows, y, w))
-    return {"method": "measured (per-base depth, weighted least squares)",
-            "depths": {n: round(v, 2) for n, v in zip(order, x)},
-            "equations": len(rows), "unknowns": len(order),
-            "weighted_relative_rss": round(rss / denom, 4),
-            "classes_used": resid}
+def _unique_depths(classes: List[Dict], order: List[str]) -> Dict[str, float]:
+    """bp-weighted mean depth of each construct's singleton class."""
+    out: Dict[str, float] = {}
+    for n in order:
+        hits = [c for c in classes if c["membership"] == [n]]
+        if hits:
+            out[n] = (sum(c["mean"] * c["bases"] for c in hits)
+                      / sum(c["bases"] for c in hits))
+    return out
+
+
+def _choose_depths(order: List[str], unique: Dict[str, float],
+                   wls: Optional[Dict[str, float]], baseline: float,
+                   caveats: List[str]
+                   ) -> Tuple[Dict[str, Optional[float]], Dict[str, str]]:
+    """Unique-block depth where there is one; otherwise the flagged solve."""
+    depths: Dict[str, Optional[float]] = {}
+    source: Dict[str, str] = {}
+    for n in order:
+        if n in unique:
+            depths[n], source[n] = unique[n], "unique block"
+            continue
+        v = wls[n]                                    # type: ignore[index]
+        if baseline and v / baseline < NEGATIVE_COPIES_TOL:
+            depths[n] = None
+            source[n] = "none: no usable unique block, and the solve is negative"
+            caveats.append(
+                "%s has no usable unique block, and the stacked solve gives it "
+                "%.2f copies -- negative, so no copy number is reported for it "
+                "rather than a clamped zero. See the closure check below."
+                % (n, v / baseline))
+        else:
+            depths[n] = v
+            source[n] = "WLS solve (FLAGGED: no usable unique block)"
+            caveats.append(
+                "%s has no usable unique block (none in the depth supplied, or "
+                "too little left after trimming), so its copy number comes from "
+                "the stacked weighted least-squares solve "
+                "over shared classes. That inherits any non-additivity of the "
+                "shared blocks (e.g. backbone loss); treat it as provisional."
+                % n)
+    return depths, source
+
+
+def _thin_unique_caveat(n: str, bp: int, trim_mode: str, edge_trim: int) -> str:
+    return ("%s's copy number rests on only %d bp of unique sequence after "
+            "%s trimming (%d bp per edge). The estimate is low-confidence; "
+            "consider --trim-mode contig-end, which keeps small unique "
+            "blocks at the cost of some boundary taper "
+            "(references/quantification.md, section 2)."
+            % (n, bp, trim_mode, edge_trim))
+
+
+def _closure(classes: List[Dict], depths: Dict[str, Optional[float]],
+             order: List[str]) -> Optional[Dict]:
+    """Shared-class depth against the sum of the members' unique depths."""
+    rows: List[Dict] = []
+    for c in classes:
+        mem = [m for m in c["membership"] if m in order]
+        if len(c["membership"]) < 2 or any(depths.get(m) is None for m in mem):
+            continue
+        pred = sum(depths[m] for m in mem)            # type: ignore[misc]
+        if pred <= 0:
+            continue
+        rows.append({"mapping": c["mapping"], "membership": c["membership"],
+                     "bases": c["bases"], "observed": round(c["mean"], 2),
+                     "predicted": round(pred, 2),
+                     "deficit_pct": round(100 * (c["mean"] - pred) / pred, 1)})
+    if not rows:
+        return None
+    bp = sum(r["bases"] for r in rows)
+    ob = sum(r["observed"] * r["bases"] for r in rows)
+    pr = sum(r["predicted"] * r["bases"] for r in rows)
+    return {"classes": rows, "observed": round(ob / bp, 2),
+            "predicted": round(pr / bp, 2),
+            "deficit_pct": round(100 * (ob - pr) / pr, 1)}
+
+
+def _wls_residuals(classes: List[Dict], x: List[float]
+                   ) -> Tuple[List[Dict], float]:
+    """Per-class residuals of the stacked solve, and weighted relative RSS."""
+    resid: List[Dict] = []
+    rss = denom = 0.0
+    for c in classes:
+        pred = sum(r * v for r, v in zip(c["row"], x))
+        resid.append({"mapping": c["mapping"], "membership": c["membership"],
+                      "mean_depth": round(c["mean"], 2), "bases": c["bases"],
+                      "predicted_depth": round(pred, 2),
+                      "residual": round(c["mean"] - pred, 2)})
+        rss += c["bases"] * (c["mean"] - pred) ** 2
+        denom += c["bases"] * c["mean"] ** 2
+    return resid, round(rss / (denom or 1.0), 4)
+
+
+def _negative_caveat(wls: Dict[str, float], baseline: float,
+                     closure: Optional[Dict]) -> Optional[str]:
+    """A materially negative solve means the additive model is incomplete."""
+    negative = {n: v / baseline for n, v in wls.items()
+                if baseline and v / baseline < NEGATIVE_COPIES_TOL}
+    if not negative:
+        return None
+    return (
+        "ADDITIVE MODEL INCOMPLETE. The unconstrained stacked solve "
+        "gives %s copies per haploid -- below zero, which is not "
+        "physical. Shared blocks carry %s depth than the sum of their "
+        "constructs' unique blocks predicts (closure %s%%), most likely "
+        "partial loss of shared backbone in concatemers. Copy numbers "
+        "below are each construct's own unique-block depth, which does "
+        "not depend on the shared blocks; the solve is shown only as a "
+        "diagnostic and has NOT been clamped to zero."
+        % (", ".join("%s %.2f" % kv for kv in negative.items()),
+           "less" if closure and closure["deficit_pct"] < 0 else "different",
+           "%+.1f" % closure["deficit_pct"] if closure else "n/a"))
+
+
+def solve_measured(cfg: Dict, ident: Dict, sample: str, edge_trim: int,
+                   min_class_bp: int, baseline: float,
+                   trim_mode: str = "block-edge",
+                   min_unique_bp: int = MIN_UNIQUE_BP) -> Optional[Dict]:
+    """Per-construct depth from per-base depth files.
+
+    The ESTIMATOR is each construct's own singleton membership class -- the
+    bases only that construct carries -- read directly, with no solve. The
+    all-class weighted least-squares solve is computed UNCONSTRAINED and kept
+    as a consistency check: it is used for a construct only when that
+    construct has no usable unique block, and that is flagged.
+
+    Shared classes are then checked for closure: observed depth against the
+    sum of their members' unique-block depths. A deficit there, and a
+    negative unconstrained solution, both mean the additive model is
+    incomplete -- most often partial loss of shared backbone in concatemers.
+    They are reported, never clamped away.
+    """
+    order: List[str] = list(cfg["mappings"])
+    classes, unique_bp = _collect_classes(cfg, ident, sample, order, edge_trim,
+                                          min_class_bp, trim_mode)
+    if not classes:
+        return None
+    unique = _unique_depths(classes, order)
+    x = (solve_wls([c["row"] for c in classes], [c["mean"] for c in classes],
+                   [float(c["bases"]) for c in classes], non_negative=False)
+         if len(classes) >= len(order) else None)
+    wls = dict(zip(order, x)) if x is not None else None
+    if wls is None and any(n not in unique for n in order):
+        return None          # some construct has neither: fall back, as before
+
+    caveats: List[str] = []
+    depths, source = _choose_depths(order, unique, wls, baseline, caveats)
+    caveats += [_thin_unique_caveat(n, unique_bp.get(n, 0), trim_mode, edge_trim)
+                for n in order
+                if n in unique and unique_bp.get(n, 0) < min_unique_bp]
+    closure = _closure(classes, depths, order)
+    resid, rss_rel = _wls_residuals(classes, x) if x is not None else ([], None)
+    neg = _negative_caveat(wls, baseline, closure) if wls is not None else None
+    if neg:
+        caveats.insert(0, neg)
+
+    return {"method": "measured (unique-block depth; weighted least squares "
+                      "as cross-check)",
+            "depths": {n: (round(v, 2) if v is not None else None)
+                       for n, v in depths.items()},
+            "source": source,
+            "unique_bp": {n: unique_bp.get(n, 0) for n in order},
+            "trim_mode": trim_mode, "edge_trim": edge_trim,
+            "wls_depths": ({n: round(v, 2) for n, v in wls.items()}
+                           if wls is not None else None),
+            "wls_note": (None if wls is not None else
+                         "stacked solve unavailable (singular or too few "
+                         "classes); unique blocks need no solve"),
+            "equations": len(classes), "unknowns": len(order),
+            "weighted_relative_rss": rss_rel,
+            "classes_used": resid,
+            "closure": closure,
+            "caveats": caveats}
 
 
 # --------------------------------------------------------------------------
@@ -265,7 +473,7 @@ def solve_inferred(cfg: Dict, ident: Dict, sample: str,
 # --------------------------------------------------------------------------
 
 def architecture(cfg: Dict, jrows: Dict[str, List[Dict]], mapping: str,
-                 sample: str, copies: float, modality: str,
+                 sample: str, copies: Optional[float], modality: str,
                  include_end_religation: bool) -> Dict:
     """Copies per site, and the site count that implies."""
     rows = jrows.get(mapping, [])
@@ -331,7 +539,8 @@ def architecture(cfg: Dict, jrows: Dict[str, List[Dict]], mapping: str,
                                        "unknown whether arrays are possible"))
 
     n = out["copies_per_site"]
-    out["implied_sites"] = round(copies / n, 2) if n else None
+    out["implied_sites"] = (round(copies / n, 2)
+                            if n and copies is not None else None)
     return out
 
 
@@ -422,6 +631,76 @@ def calibrate(cfg: Dict, jrows: Dict[str, List[Dict]], C: float,
 
 # --------------------------------------------------------------------------
 
+def _render_closure(cl: Optional[Dict]) -> List[str]:
+    if not cl:
+        return []
+    L: List[str] = []
+    L += ["**Shared-block closure: %+.1f%%** (observed %.2f vs %.2f "
+          "predicted from the members' unique blocks, bp-weighted)."
+          % (cl["deficit_pct"], cl["observed"], cl["predicted"]), "",
+          "| Reference | Bases carried by | bp used | observed | "
+          "predicted (sum of unique) | deficit |",
+          "|---|---|---|---|---|---|"]
+    for r in cl["classes"]:
+        L.append("| %s | %s | %s | %.2f | %.2f | %+.1f%% |"
+                 % (r["mapping"], " + ".join(r["membership"]),
+                    format(r["bases"], ","), r["observed"],
+                    r["predicted"], r["deficit_pct"]))
+    L += ["", "A shared-block deficit means the constructs' depths do "
+          "not add over shared sequence. In concatemer lines the usual "
+          "cause is partial loss of shared backbone; a surplus points to "
+          "host-homologous sequence or an unlisted construct.", ""]
+    return L
+
+
+def render_measured(s: str, d: Dict, order: List[str]) -> List[str]:
+    """Per-sample report section for the measured route: estimates, the
+    WLS cross-check, and shared-block closure. Empty for other routes."""
+    sol = d["solve"]
+    if "source" not in sol:
+        return []
+    L: List[str] = []
+    B = d["baseline_depth"] or 1.0
+    L += ["### %s -- per-construct estimate" % s, "",
+          "Each construct's copy number is the depth over the bases only it "
+          "carries, read directly (edge trim %d bp, mode `%s`). The stacked "
+          "weighted least-squares solve over every class is shown beside "
+          "it, unconstrained, as a cross-check only."
+          % (sol["edge_trim"], sol["trim_mode"]), "",
+          "| Construct | reported copies | source | unique bp | "
+          "WLS cross-check copies |",
+          "|---|---|---|---|---|"]
+    wls = sol.get("wls_depths") or {}
+    for n in order:
+        c = d["copies_per_haploid"].get(n)
+        L.append("| %s | %s | %s | %s | %s |"
+                 % (n, "%.2f" % c if c is not None else "not reported",
+                    sol["source"].get(n, "-"),
+                    format(sol["unique_bp"].get(n, 0), ","),
+                    "%.2f" % (wls[n] / B) if n in wls else "-"))
+    L.append("")
+    if sol.get("wls_note"):
+        L += ["Stacked solve: %s." % sol["wls_note"], ""]
+    L += _render_closure(sol.get("closure"))
+    if sol.get("classes_used"):
+        L += ["Stacked solve: %d equations, %d unknowns, weighted relative "
+              "residual %s." % (sol["equations"], sol["unknowns"],
+                                sol["weighted_relative_rss"]),
+              "",
+              "| Reference | Bases carried by | bp used | observed | WLS predicted | residual |",
+              "|---|---|---|---|---|---|"]
+        for c in sol["classes_used"]:
+            L.append("| %s | %s | %s | %.2f | %.2f | %+.2f |"
+                     % (c["mapping"], " + ".join(c["membership"]),
+                        format(c["bases"], ","), c["mean_depth"],
+                        c["predicted_depth"], c["residual"]))
+        L += ["", "Large residuals mean the block map does not explain the "
+              "depth: a repeat shared with the host genome, an unlisted "
+              "construct, non-uniform library coverage, or shared-backbone "
+              "loss.", ""]
+    return L
+
+
 def render(cfg: Dict, result: Dict) -> str:
     primary = result["primary_mapping"]
     L = ["# Copy number and site accounting", "",
@@ -434,7 +713,7 @@ def render(cfg: Dict, result: Dict) -> str:
         L += ["> %s" % c for c in caveats]
         L.append("")
     else:
-        L += ["All copy numbers below are solved from per-base depth, not "
+        L += ["All copy numbers below are measured from per-base depth, not "
               "inferred.", ""]
 
     L += ["## Construct abundance", "",
@@ -443,35 +722,24 @@ def render(cfg: Dict, result: Dict) -> str:
           "assumed -- many immortalised lines are aneuploid and drift."
           % cfg.get("ploidy", "?"), ""]
     order = list(cfg["mappings"])
-    L += ["| Sample | Genome cov | " + " | ".join(order) + " | Route |",
-          "|---" * (len(order) + 3) + "|"]
+    L += ["| Sample | Genome cov (reads) | CN baseline | " + " | ".join(order)
+          + " | Route |",
+          "|---" * (len(order) + 4) + "|"]
     for s, d in result["samples"].items():
-        cells = [s, "%.1fx" % d["genome_coverage"]]
+        cells = [s, "%.1fx" % d["genome_coverage"],
+                 "%.1fx (%s)" % (d["baseline_depth"], d["baseline_source"])]
         for n in order:
             c = d["copies_per_haploid"].get(n)
             cells.append("%.2f" % c if c is not None else "-")
         cells.append(d["solve"]["method"])
         L.append("| " + " | ".join(cells) + " |")
     L.append("")
+    for s, d in result["samples"].items():
+        L.append("- **%s** %s" % (s, d["baseline_note"]))
+    L.append("")
 
     for s, d in result["samples"].items():
-        sol = d["solve"]
-        if sol.get("classes_used"):
-            L += ["### %s -- the solve" % s, "",
-                  "%d equations, %d unknowns, weighted relative residual %s."
-                  % (sol["equations"], sol["unknowns"],
-                     sol["weighted_relative_rss"]),
-                  "",
-                  "| Reference | Bases carried by | bp used | observed | predicted | residual |",
-                  "|---|---|---|---|---|---|"]
-            for c in sol["classes_used"]:
-                L.append("| %s | %s | %s | %.2f | %.2f | %+.2f |"
-                         % (c["mapping"], " + ".join(c["membership"]),
-                            format(c["bases"], ","), c["mean_depth"],
-                            c["predicted_depth"], c["residual"]))
-            L += ["", "Large residuals mean the block map does not explain the "
-                  "depth: a repeat shared with the host genome, an unlisted "
-                  "construct, or non-uniform library coverage.", ""]
+        L += render_measured(s, d, order)
 
     L += ["## Architecture and site accounting (%s)" % primary, "",
           "| Sample | copies/haploid | flank reads | internal reads | "
@@ -552,6 +820,17 @@ def main(argv=None) -> int:
     ap.add_argument("--edge-trim", type=int, default=0,
                     help="bases trimmed from each end of every block before "
                          "averaging depth. Default 0 = use read_length.")
+    ap.add_argument("--trim-mode", choices=TRIM_MODES, default=None,
+                    help="where --edge-trim applies. block-edge (default): "
+                         "both ends of every membership block -- removes the "
+                         "cross-mapping taper but discards small unique "
+                         "blocks. contig-end: only the linear reference "
+                         "termini -- keeps small unique blocks but leaves the "
+                         "taper in. Overrides `trim_mode` in the config. See "
+                         "references/quantification.md section 2.")
+    ap.add_argument("--min-unique-bp", type=int, default=MIN_UNIQUE_BP,
+                    help="flag any construct whose retained unique bp after "
+                         "trimming is below this (default %d)" % MIN_UNIQUE_BP)
     ap.add_argument("--min-class-bp", type=int, default=200,
                     help="membership classes with fewer usable bases than this "
                          "are left out of the solve (default 200)")
@@ -618,6 +897,11 @@ def main(argv=None) -> int:
         return 2
 
     edge_trim = a.edge_trim or int(cfg["read_length"])
+    trim_mode = a.trim_mode or cfg.get("trim_mode", "block-edge")
+    if trim_mode not in TRIM_MODES:
+        print("error: trim_mode %r unknown; expected one of %s"
+              % (trim_mode, ", ".join(TRIM_MODES)), file=sys.stderr)
+        return 2
     anchors = [int(x) for x in a.anchors.split(",") if x.strip()]
 
     result: Dict = {"primary_mapping": primary, "modality": modality,
@@ -636,16 +920,25 @@ def main(argv=None) -> int:
             return 2
         C = genome_coverage(float(s["dedup_pairs"]), int(cfg["read_length"]),
                             float(cfg["genome_size"]))
-        sol = solve_measured(cfg, ident, sample, edge_trim, a.min_class_bp)
+        B, use_median, baseline_note = choose_baseline(s, C)
+        print("%s: %s" % (sample, baseline_note), file=sys.stderr)
+        sol = solve_measured(cfg, ident, sample, edge_trim, a.min_class_bp,
+                             B, trim_mode, a.min_unique_bp)
         if sol is None:
             sol = solve_inferred(cfg, ident, sample, jrows)
         for c in sol.get("caveats", []):
             if c not in caveats:
                 caveats.append("[%s] %s" % (sample, c) if len(cfg["samples"]) > 1 else c)
 
-        copies = {n: (v / C if C else None) for n, v in sol["depths"].items()}
+        copies = {n: (v / B if B and v is not None else None)
+                  for n, v in sol["depths"].items()}
         cn = copies.get(primary)
-        arch = architecture(cfg, jrows, primary, sample, cn if cn else 0.0,
+        if cn is None and primary in sol["depths"]:
+            # measured route withheld the number: do not let it become a 0
+            arch_cn: Optional[float] = None
+        else:
+            arch_cn = cn if cn else 0.0
+        arch = architecture(cfg, jrows, primary, sample, arch_cn,
                             modality, a.include_end_religation)
         for n in arch["notes"]:
             if "does not appear in the junction table" in n and n not in caveats:
@@ -655,6 +948,10 @@ def main(argv=None) -> int:
             detected = cfg["mappings"][primary].get("detected_loci")
         result["samples"][sample] = {
             "genome_coverage": round(C, 2),
+            "baseline_depth": round(B, 2),
+            "baseline_source": ("genome-median per-base depth" if use_median
+                                else "read count"),
+            "baseline_note": baseline_note,
             "solve": sol,
             "depths": sol["depths"],
             "copies_per_haploid": {n: (round(v, 3) if v is not None else None)
