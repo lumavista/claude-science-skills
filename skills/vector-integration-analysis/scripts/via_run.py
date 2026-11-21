@@ -33,6 +33,9 @@ import os
 import sys
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from via_common import parse_int_list  # noqa: E402
+
 #: exit status of a stage stopped by `--strict` on a failing check
 STRICT_EXIT = 3
 
@@ -50,10 +53,19 @@ class Checks:
         self.stage = stage
         self.items: List[Dict[str, str]] = []
         self._accept = {a.strip() for a in accept if a and a.strip()}
+        self._refused: List[str] = []
 
-    def add(self, check_id: str, status: str, message: str) -> None:
+    def add(self, check_id: str, status: str, message: str,
+            acceptable: bool = True) -> None:
+        """Record one check. A failing check named by `--accept` becomes
+        `accepted` -- unless `acceptable` is False, for a check whose failure
+        no judgement can waive (it needs a fact only the user has); then the
+        `--accept` is refused and the check still fails."""
         if status == FAIL and check_id in self._accept:
-            status = ACCEPTED
+            if acceptable:
+                status = ACCEPTED
+            elif check_id not in self._refused:
+                self._refused.append(check_id)
         self.items.append({"id": check_id, "status": status,
                            "message": message})
 
@@ -92,6 +104,9 @@ class Checks:
             print("  warning: --accept %s names no check of this stage (%s)"
                   % (name, ", ".join(c["id"] for c in self.items)),
                   file=stream)
+        for name in self._refused:
+            print("  warning: --accept %s refused: this check cannot be "
+                  "accepted; resolve its cause" % name, file=stream)
         label = {FAIL: "CHECK FAILED", ACCEPTED: "CHECK ACCEPTED",
                  WARN: "CHECK WARNING"}
         for c in self.items:
@@ -132,6 +147,15 @@ def add_check_arguments(ap) -> None:
 
 class RunError(ValueError):
     """The manifest cannot supply what a stage asked it for."""
+
+
+class InputError(Exception):
+    """An input is missing, unreadable or contradictory.
+
+    Every stage catches it in `main` and exits 2, the status SKILL.md gives
+    for an input that could not be read, so a stage states the problem in one
+    `error:` line instead of threading return codes through its steps.
+    """
 
 
 class Run:
@@ -194,11 +218,14 @@ class Run:
 
     def vector_ends(self, mapping: str) -> List[int]:
         ends = (self.fact("vector_ends") or {}).get(mapping) or []
+        if isinstance(ends, str):
+            ends = [ends]
         try:
-            return [int(x) for x in ends]
-        except (TypeError, ValueError):
+            return parse_int_list(",".join(str(x) for x in ends),
+                                  "vector_ends.%s" % mapping)
+        except (TypeError, ValueError) as exc:
             raise RunError("vector_ends.%s in the run manifest must be a list "
-                           "of integers, got %r" % (mapping, ends))
+                           "of integers, got %r (%s)" % (mapping, ends, exc))
 
     def tables(self, mapping: str) -> List[Tuple[str, str]]:
         """(sample, junction table) for one mapping, in manifest order."""

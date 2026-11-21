@@ -143,7 +143,7 @@ The full deliverable checklist, and what to request from a provider:
 ### Stage 1 — construct identity map
 
 ```bash
-python scripts/construct_identity.py pAlpha.gb pBeta.gb pGamma.gb --run run.json
+python scripts/construct_identity.py pAlpha.gb pBeta.gb pGamma.gb --run run.json --strict
 ```
 
 Writes `identity.json` and `identity_map.md`. Three flags are judgements:
@@ -156,8 +156,6 @@ incidental matches such as restriction and primer sites.
 Yields per construct a block map labelled by **which constructs carry that
 sequence** (not merely whether it is shared), the attributable fraction, and the
 **predicted boundary positions** where cross-mapping artefacts will appear.
-`--correspond pAlpha:4809` maps a coordinate onto every other construct — how
-you recognise one event described twice against two references.
 
 Run this **before looking at any junction**, since only construct-unique
 positions can be attributed on sequence alone, and supply a reference for every
@@ -203,6 +201,14 @@ filler-length rules are reliable, the short-range inverted rule is a heuristic;
 Flank pairing is strict — only an `R` + `L` pair within the window is a match.
 Two junctions of the same clip side are two left flanks, not a bracketed site,
 and conflating them inflates the site count.
+
+The locus table is a **union over samples**: a site seen only in a non-reference
+sample is a locus like any other, and each sample's `support_<sample>` counts
+both flanks. Junctions from different samples are the same site when they agree
+within `--sample-tol` (3 bp) on both the host and the vector side, so a one-base
+caller disagreement does not split one insertion into two. The reference sample
+(`--ref-sample`, default the first table) only fixes which sample the
+cross-sample ratios are taken against.
 
 **Done when** every mapping has exited 0 and its `stage2_<mapping>.md` reports
 how each column and the clip side were read.
@@ -318,8 +324,9 @@ It does four things, in this order:
 1. **Collapses** across mappings. One junction reported by two mapping runs is
    one event, never two. Support is combined as the per-sample maximum, not the
    sum — the runs report the same reads.
-2. **Retains** only loci with support ≥ `--min-reads` (5) in ≥ `--min-samples`
-   (2) independently prepared samples. The rest go to a sub-threshold table as
+2. **Retains** only loci with total support ≥ `--min-reads` (5), summed over
+   samples, that appear in ≥ `--min-samples` (2) independently prepared
+   samples. The rest go to a sub-threshold table as
    the single-read/noise tail, reported as a tail.
 3. **Attributes** by strict priority: **unique** sequence → `certain`;
    else a **declared vector end** of exactly one construct → `inferred`; else
@@ -415,6 +422,8 @@ the standard outputs, for any genome and any number of constructs:
 figure's input is missing, the script skips that figure, records why in
 `figures/figures.json` and puts a visible "not generated" note in its slot:
 supply the input and rerun rather than substituting a figure of your own.
+An input that exists but cannot be parsed, or an unreadable `--run` manifest,
+is exit status 2, as in every other stage.
 
 Structure in `assets/report_template.md`, which ends with the validation
 priorities (ddPCR copy number, junction PCR, long reads); bench follow-up in

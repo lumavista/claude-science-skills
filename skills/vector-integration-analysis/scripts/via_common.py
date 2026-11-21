@@ -939,5 +939,43 @@ def load_json(path: str):
         return json.load(fh)
 
 
+def parse_kv_pairs(items: Sequence[str], flag: str, require_key: bool = True
+                   ) -> List[Tuple[str, str]]:
+    """`NAME=VALUE` arguments as (name, value) pairs, in the order given.
+
+    With `require_key=False` a bare `VALUE` is allowed and comes back with an
+    empty name, for flags whose label is optional.
+    """
+    out: List[Tuple[str, str]] = []
+    for item in items:
+        k, sep, v = item.partition("=")
+        if not sep or not k.strip():
+            if require_key:
+                raise ValueError("%s needs NAME=VALUE, got %r" % (flag, item))
+            out.append(("", item.strip()))
+            continue
+        out.append((k.strip(), v.strip()))
+    return out
+
+
+def parse_kv(items: Sequence[str], flag: str) -> Dict[str, str]:
+    """`NAME=VALUE` arguments as a dict; a later repeat wins."""
+    return dict(parse_kv_pairs(items, flag))
+
+
+def parse_int_list(spec: str, flag: str, what: str = "") -> List[int]:
+    """A comma-separated list of integers, as `--vector-ends` takes them."""
+    out: List[int] = []
+    for x in spec.split(","):
+        x = x.strip()
+        if not x:
+            continue
+        if not x.lstrip("-").isdigit():
+            raise ValueError("%s takes integers, got %r%s"
+                             % (flag, x, " for %s" % what if what else ""))
+        out.append(int(x))
+    return out
+
+
 def fmt_warnings(warnings: Sequence[str], prefix: str = "  warning: ") -> str:
     return "\n".join(prefix + w for w in warnings)

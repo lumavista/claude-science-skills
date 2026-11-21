@@ -664,9 +664,7 @@ sys.path.insert(0, sys.argv[1])
 import classify_junctions, copy_number, reconcile_sites, via_common
 M = via_common.MODALITIES
 assert classify_junctions.MODALITIES is M
-assert set(copy_number.CONCATEMER_CAPABLE) == set(M)
 for name, m in M.items():
-    assert copy_number.CONCATEMER_CAPABLE[name] == m["concatemers"], name
     assert (name in copy_number.FIXED_COPIES_PER_SITE) == (m["concatemers"] is False), name
 # what Stage 2 writes is what Stage 4 reads, through one pair of functions
 assert reconcile_sites.read_loci is via_common.read_loci
@@ -849,9 +847,14 @@ a = json.load(open("cn_recon.json")); b = json.load(open("mf/accounting.json"))
 for k in ("copies_per_haploid", "copies_per_cell", "solve", "architecture"):
     assert a["samples"]["s1"][k] == b["samples"]["s1"][k], k
 a = json.load(open("site_summary.json")); b = json.load(open("mf/site_summary.json"))
-for k in ("per_construct", "unresolved", "ceilings", "parameters", "caveats",
+for k in ("per_construct", "unresolved", "ceilings", "caveats",
           "n_entries", "n_unified", "n_called", "n_sub"):
     assert a[k] == b[k], k
+# same numbers; only the recorded provenance of the ploidy differs by route
+pa, pb = dict(a["parameters"]), dict(b["parameters"])
+assert pb.pop("ploidy_source") == "run manifest", b["parameters"]
+pa.pop("ploidy_source")
+assert pa == pb, (pa, pb)
 print("OK")
 EOF
 grep -q "^OK$" mf_same.log && ok "manifest route reproduces the copy numbers and the site result" \
@@ -1070,6 +1073,14 @@ grep -q "^OK$" figs_empty_check.log \
   && ok "no loci: all chromosomes drawn, zero ticks" \
   || { bad "no-loci overview"; cat figs_empty_check.log; }
 
+# an input that exists but cannot be parsed is exit 2, not a skip
+printf 'not json\n' >broken.json
+expect_exit "make_figures: an unparsable site summary is exit 2" 2 figs_broken.log \
+  "$PY" "$SCRIPTS/make_figures.py" --out figs_broken --site-summary broken.json
+assert_has "the unreadable input is named" figs_broken.log "error: site summary broken.json unreadable"
+expect_exit "make_figures: an unreadable --run manifest is exit 2" 2 figs_badrun.log \
+  "$PY" "$SCRIPTS/make_figures.py" --out figs_badrun --run broken.json
+
 # every input missing: nothing drawn, nothing fails, every skip explained
 "$PY" "$SCRIPTS/make_figures.py" --out figs_none --fai does_not_exist.fai \
   >figs_none.log 2>&1 && ok "missing inputs degrade, exit 0" \
@@ -1106,7 +1117,7 @@ assert_lacks "no figure slot left as a placeholder in the report body" \
   >fill_raw.out 2>fill_raw.err \
   && ok "--fill on an unedited template still exits 0" || bad "--fill unedited"
 assert_has "unedited placeholder warned about on stderr, by name" fill_raw.err \
-  "WARNING.*\[\[FIG:coverage_<construct A>\]\]"
+  "CHECK WARNING \[figure_placeholders\].*\[\[FIG:coverage_<construct A>\]\]"
 assert_has "the warning lists the constructs that have coverage figures" \
   fill_raw.err "coverage figures exist for: pDelta, pEpsilon"
 assert_lacks "an edited template draws no such warning" fill.log "WARNING"
@@ -1146,6 +1157,65 @@ assert_has "shortfall printed as a warning check" acct_short.log \
 acct --copies pDelta=0.55 --copies pEpsilon=4.6 --md acct_tol.md >acct_tol.log 2>&1
 assert_has "agreement within ~25% accounts for the DNA" acct_tol.md \
   "pEpsilon \| 4\.60 \| 10 \| 7 \| 3 \| the called sites account"
+
+echo
+echo "== Stage 2: the locus table is a union over samples =="
+# a site seen only in the second sample, and a 1-bp caller shift in another
+cp junctions_nhej_s2.tsv union_s2.tsv
+printf 'chr3\t40000000\tright_clip\t0\tpAlpha\t3300\tleft_clip\t50\tPASS\n' >>union_s2.tsv
+awk 'BEGIN{OFS="\t"} $1=="chr7"{$2=$2+1} {print}' union_s2.tsv >union_s2_shift.tsv
+for order in fwd rev; do
+  if [ $order = fwd ]; then t1="parental=junctions_nhej.tsv"; t2="treated=union_s2_shift.tsv"
+  else t1="treated=union_s2_shift.tsv"; t2="parental=junctions_nhej.tsv"; fi
+  "$PY" "$SCRIPTS/classify_junctions.py" --identity id3.json --mapping pAlpha \
+    --modality nhej --vector-ends 1,5300 --table "$t1" --table "$t2" \
+    --out-loci "loci_union_$order.tsv" >"union_$order.log" 2>&1 \
+    || { bad "union run ($order)"; cat "union_$order.log"; }
+  assert_has "a site seen only in sample 2 is a locus ($order order)" \
+    "loci_union_$order.tsv" "^chr3[[:space:]]+40000000"
+done
+"$PY" - <<'PYEOF' >union_check.log 2>&1
+import csv
+for order in ("fwd", "rev"):
+    rows = list(csv.DictReader(open("loci_union_%s.tsv" % order), delimiter="\t"))
+    chr1 = [r for r in rows if r["contig"] == "chr1"]
+    assert len(chr1) == 1 and chr1[0]["flanks"] == "2", chr1
+    # both flanks count in every sample: 30+26 and 18+15
+    assert (chr1[0]["support_parental"], chr1[0]["support_treated"]) == ("56", "33"), chr1
+    chr7 = [r for r in rows if r["contig"] == "chr7"]
+    assert len(chr7) == 1, chr7
+    assert (chr7[0]["support_parental"], chr7[0]["support_treated"]) == ("18", "10"), chr7
+print("OK")
+PYEOF
+if grep -q "^OK$" union_check.log; then
+  ok "every sample's support counts both flanks"
+  ok "a 1-bp shift between samples does not split one site"
+else
+  bad "per-sample locus support"; cat union_check.log
+fi
+
+echo
+echo "== Stage 4: argument handling =="
+expect_exit "--min-copies-per-site 0 is refused, not a traceback" 2 rs_zero.log \
+  rs --loci pDelta=loci_recon_pDelta.tsv --copies pDelta=1 --min-copies-per-site 0
+assert_lacks "no traceback for a zero divisor" rs_zero.log "Traceback"
+# one --copies under --run overrides only the construct it names
+"$PY" "$SCRIPTS/reconcile_sites.py" --run mf/run.json --min-copies-per-site 10 \
+  --copies pDelta=0.5 --summary mf_copies.json --md mf_copies.md \
+  --out-called mf_copies_called.tsv --out-subthreshold mf_copies_sub.tsv \
+  >mf_copies.log 2>&1
+"$PY" - <<'PYEOF' >mf_copies_check.log 2>&1
+import json
+d = json.load(open("mf_copies.json"))
+assert "overridden from --copies for pDelta" in d["copy_number_source"], d["copy_number_source"]
+assert d["per_construct"]["pDelta"]["copies_per_haploid"] == 0.5, d["per_construct"]
+assert d["per_construct"]["pEpsilon"]["copies_per_haploid"] is not None, d["per_construct"]
+assert d["per_construct"]["pEpsilon"]["ceiling"] is not None, d["per_construct"]
+print("OK")
+PYEOF
+grep -q "^OK$" mf_copies_check.log \
+  && ok "--copies under --run keeps the manifest's copy numbers for other constructs" \
+  || { bad "--copies under --run"; cat mf_copies_check.log mf_copies.log; }
 
 echo
 echo "== Host stage: test_host.sh =="

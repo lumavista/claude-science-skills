@@ -82,40 +82,20 @@ from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from via_common import (MODALITIES, load_json, natural_key,  # noqa: E402
-                        read_loci)
-from via_run import (FAIL, PASS, WARN, Checks, RunError,  # noqa: E402
-                     add_check_arguments, load_run, reconcile_inputs)
+                        parse_int_list, parse_kv, read_loci)
+from via_run import (FAIL, PASS, WARN, Checks, InputError,  # noqa: E402
+                     RunError, add_check_arguments, load_run,
+                     reconcile_inputs)
 
 
 # --------------------------------------------------------------------------
 # input
 # --------------------------------------------------------------------------
 
-def parse_kv(items: Sequence[str], flag: str) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    for item in items:
-        k, sep, v = item.partition("=")
-        if not sep or not k.strip():
-            raise ValueError("%s needs NAME=VALUE, got %r" % (flag, item))
-        out[k.strip()] = v.strip()
-    return out
-
-
 def parse_ends(items: Sequence[str]) -> Dict[str, List[int]]:
     """`--vector-ends CONSTRUCT=a,b`, one per construct."""
-    out: Dict[str, List[int]] = {}
-    for name, spec in parse_kv(items, "--vector-ends").items():
-        vals: List[int] = []
-        for x in spec.split(","):
-            x = x.strip()
-            if not x:
-                continue
-            if not x.lstrip("-").isdigit():
-                raise ValueError("--vector-ends takes integers, got %r for %s"
-                                 % (x, name))
-            vals.append(int(x))
-        out[name] = vals
-    return out
+    return {name: parse_int_list(spec, "--vector-ends", name)
+            for name, spec in parse_kv(items, "--vector-ends").items()}
 
 
 def load_copies(path: Optional[str], explicit: Dict[str, str],
@@ -183,7 +163,7 @@ def _gap(a: Dict, b: Dict) -> int:
     return max(0, max(a["start"], b["start"]) - min(a["end"], b["end"]))
 
 
-class _Groups:
+class _UnionFind:
     """Union-find over entry indices: the smallest thing that expresses
     "these reports are the same physical junction"."""
 
@@ -208,12 +188,12 @@ class _Groups:
         return list(out.values())
 
 
-def _link_across_mappings(entries: Sequence[Dict], window: int) -> _Groups:
+def _link_across_mappings(entries: Sequence[Dict], window: int) -> _UnionFind:
     """Link entries of DIFFERENT mappings whose host intervals are within
     `window`. Entries of the same mapping are never linked to each other:
     classify_junctions.py has already decided whether they are one locus or
     two, and re-merging them here would deflate the site count."""
-    g = _Groups(len(entries))
+    g = _UnionFind(len(entries))
     by_contig: Dict[str, List[int]] = {}
     for i, e in enumerate(entries):
         by_contig.setdefault(e["contig"], []).append(i)
@@ -271,7 +251,7 @@ def collapse(entries: Sequence[Dict], window: int, samples: Sequence[str]
     groups = _link_across_mappings(entries, window)
     loci = [_unify(members, samples)
             for members in groups.groups(list(entries))]
-    loci.sort(key=lambda L: (natural_key(L["contig"]), L["start"]))
+    loci.sort(key=lambda locus: (natural_key(locus["contig"]), locus["start"]))
     return loci
 
 
@@ -291,19 +271,19 @@ def retain(loci: Sequence[Dict], min_reads: int, min_samples: int
     """
     called: List[Dict] = []
     sub: List[Dict] = []
-    for L in loci:
+    for locus in loci:
         why: List[str] = []
-        if L["total_support"] < min_reads:
+        if locus["total_support"] < min_reads:
             why.append("support %d < --min-reads %d"
-                       % (L["total_support"], min_reads))
-        if L["n_samples"] < min_samples:
+                       % (locus["total_support"], min_reads))
+        if locus["n_samples"] < min_samples:
             why.append("in %d sample(s) < --min-samples %d"
-                       % (L["n_samples"], min_samples))
+                       % (locus["n_samples"], min_samples))
         if why:
-            L["subthreshold_reason"] = "; ".join(why)
-            sub.append(L)
+            locus["subthreshold_reason"] = "; ".join(why)
+            sub.append(locus)
         else:
-            called.append(L)
+            called.append(locus)
     return called, sub
 
 
@@ -350,7 +330,8 @@ def candidates(locus: Dict, constructs: Sequence[str]) -> FrozenSet[str]:
     return frozenset(out)
 
 
-def unique_attribution(locus: Dict, constructs: Sequence[str]) -> Optional[str]:
+def unique_attribution(locus: Dict,
+                       constructs: Sequence[str]) -> Optional[str]:
     """(a) CERTAIN: some mapping puts the vector side in one construct's own
     sequence. Singleton membership in the identity map is sequence evidence,
     and nothing downstream may overrule it."""
@@ -434,22 +415,23 @@ def ceiling_attribution(cands: Sequence[str], copies: Dict[str, Optional[float]]
 
 
 def _init_tiers(called: Sequence[Dict], constructs: Sequence[str]) -> None:
-    for L in called:
-        L["candidates"] = sorted(candidates(L, constructs))
-        L["construct"] = ""
-        L["confidence"] = "unresolved"
-        L["evidence"] = ""
-        L["attribution_note"] = ""
+    for locus in called:
+        locus["candidates"] = sorted(candidates(locus, constructs))
+        locus["construct"] = ""
+        locus["confidence"] = "unresolved"
+        locus["evidence"] = ""
+        locus["attribution_note"] = ""
 
 
 def _apply_unique(called: Sequence[Dict], constructs: Sequence[str],
                   used: Dict[str, int]) -> None:
     """(a) Sequence evidence. Not capped: nothing downstream overrules it."""
-    for L in called:
-        n = unique_attribution(L, constructs)
+    for locus in called:
+        n = unique_attribution(locus, constructs)
         if n:
-            L.update(construct=n, confidence="certain", evidence="unique",
-                     attribution_note="vector side in sequence unique to %s" % n)
+            locus.update(construct=n, confidence="certain", evidence="unique",
+                         attribution_note="vector side in sequence unique "
+                                          "to %s" % n)
             used[n] = used.get(n, 0) + 1
 
 
@@ -460,22 +442,23 @@ def _apply_vector_end(called: Sequence[Dict], ends: Dict[str, List[int]],
     Also not capped -- it is what lets a junction inside SHARED sequence still
     name its construct, when the constructs were linearized at different sites.
     """
-    for L in called:
-        if L["construct"]:
+    for locus in called:
+        if locus["construct"]:
             continue
-        n, matched, tested = end_attribution(L, ends, end_tol)
+        n, matched, tested = end_attribution(locus, ends, end_tol)
         if n:
             note = "within %d bp of %s's declared end" % (end_tol, n)
-            untested = [c for c in L["candidates"] if c not in tested]
+            untested = [c for c in locus["candidates"] if c not in tested]
             if untested:
                 note += ("; %s could not be tested (no mapping or no "
                          "--vector-ends for it)" % ", ".join(untested))
-            L.update(construct=n, confidence="inferred", evidence="vector-end",
-                     attribution_note=note)
+            locus.update(construct=n, confidence="inferred",
+                         evidence="vector-end", attribution_note=note)
             used[n] = used.get(n, 0) + 1
         elif len(matched) > 1:
-            L["attribution_note"] = ("at the declared end of more than one "
-                                     "construct (%s)" % ", ".join(matched))
+            locus["attribution_note"] = (
+                "at the declared end of more than one construct (%s)"
+                % ", ".join(matched))
 
 
 def _apply_ceiling(called: Sequence[Dict], copies: Dict[str, Optional[float]],
@@ -487,18 +470,20 @@ def _apply_ceiling(called: Sequence[Dict], copies: Dict[str, Optional[float]],
     Support decides only the ORDER in which interchangeable loci consume
     capacity; it never decides which construct a locus goes to.
     """
-    rest = [L for L in called if not L["construct"]]
-    rest.sort(key=lambda L: (-L["total_support"], natural_key(L["contig"]),
-                             L["start"]))
-    for L in rest:
-        n, why = ceiling_attribution(L["candidates"], copies, caps, used, margin)
+    rest = [locus for locus in called if not locus["construct"]]
+    rest.sort(key=lambda locus: (-locus["total_support"],
+                                 natural_key(locus["contig"]),
+                                 locus["start"]))
+    for locus in rest:
+        n, why = ceiling_attribution(locus["candidates"], copies, caps,
+                                     used, margin)
         if n:
-            L.update(construct=n, confidence="inferred", evidence="copy-ceiling",
-                     attribution_note=why)
+            locus.update(construct=n, confidence="inferred",
+                         evidence="copy-ceiling", attribution_note=why)
             used[n] = used.get(n, 0) + 1
         else:
-            L.update(construct="", confidence="unresolved", evidence="",
-                     attribution_note=why)
+            locus.update(construct="", confidence="unresolved",
+                         evidence="", attribution_note=why)
 
 
 def _ceiling_conflicts(constructs: Sequence[str], caps: Dict[str, Optional[int]],
@@ -557,14 +542,17 @@ def site_counts(called: Sequence[Dict], constructs: Sequence[str],
     """
     out: Dict[str, Dict] = {}
     for n in constructs:
-        certain = [L for L in called
-                   if L["construct"] == n and L["evidence"] == "unique"]
-        vend = [L for L in called
-                if L["construct"] == n and L["evidence"] == "vector-end"]
-        ceil_ = [L for L in called
-                 if L["construct"] == n and L["evidence"] == "copy-ceiling"]
-        unres = [L for L in called
-                 if not L["construct"] and n in L["candidates"]]
+        certain = [locus for locus in called
+                   if locus["construct"] == n
+                   and locus["evidence"] == "unique"]
+        vend = [locus for locus in called
+                if locus["construct"] == n
+                and locus["evidence"] == "vector-end"]
+        ceil_ = [locus for locus in called
+                 if locus["construct"] == n
+                 and locus["evidence"] == "copy-ceiling"]
+        unres = [locus for locus in called
+                 if not locus["construct"] and n in locus["candidates"]]
         floor = len(certain) + len(vend)
         cap = caps.get(n)
         hi = None if cap is None else max(cap, floor + len(ceil_))
@@ -588,14 +576,14 @@ def site_counts(called: Sequence[Dict], constructs: Sequence[str],
 # output
 # --------------------------------------------------------------------------
 
-def _vector_positions(L: Dict) -> str:
+def _vector_positions(locus: Dict) -> str:
     return ";".join("%s:%s" % (e["mapping"], e["vector_pos"])
-                    for e in L["entries"])
+                    for e in locus["entries"])
 
 
-def _regions(L: Dict) -> str:
+def _regions(locus: Dict) -> str:
     return ";".join("%s:%s" % (e["mapping"], e["region"] or "-")
-                    for e in L["entries"])
+                    for e in locus["entries"])
 
 
 CALLED_COLS = ["contig", "start", "end", "flanks", "footprint", "construct",
@@ -611,28 +599,30 @@ def write_table(path: str, loci: Sequence[Dict], samples: Sequence[str],
         + list(extra) + ["note"] + list(tail)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("\t".join(cols) + "\n")
-        for L in loci:
+        for locus in loci:
             row: Dict[str, object] = {
-                "contig": L["contig"], "start": L["start"], "end": L["end"],
-                "flanks": L["flanks"],
-                "footprint": "" if L["footprint"] is None else L["footprint"],
-                "construct": L.get("construct", ""),
-                "confidence": L.get("confidence", ""),
-                "evidence": L.get("evidence", ""),
-                "candidates": ",".join(L.get("candidates", [])),
-                "mappings": ",".join(L["mappings"]),
-                "vector_positions": _vector_positions(L),
-                "regions": _regions(L),
-                "total_support": L["total_support"],
-                "n_samples": L["n_samples"],
-                "note": L.get("attribution_note", ""),
-                "reason": L.get("subthreshold_reason", ""),
+                "contig": locus["contig"], "start": locus["start"],
+                "end": locus["end"],
+                "flanks": locus["flanks"],
+                "footprint": ("" if locus["footprint"] is None
+                              else locus["footprint"]),
+                "construct": locus.get("construct", ""),
+                "confidence": locus.get("confidence", ""),
+                "evidence": locus.get("evidence", ""),
+                "candidates": ",".join(locus.get("candidates", [])),
+                "mappings": ",".join(locus["mappings"]),
+                "vector_positions": _vector_positions(locus),
+                "regions": _regions(locus),
+                "total_support": locus["total_support"],
+                "n_samples": locus["n_samples"],
+                "note": locus.get("attribution_note", ""),
+                "reason": locus.get("subthreshold_reason", ""),
             }
             for s in samples:
-                row["support_" + s] = L["support"].get(s, 0)
+                row["support_" + s] = locus["support"].get(s, 0)
             for c in tail:
-                row[c] = L.get(c, "")
-            if L.get("same_mapping_merge"):
+                row[c] = locus.get(c, "")
+            if locus.get("same_mapping_merge"):
                 row["note"] = (str(row["note"]) + " | two entries of one "
                                "mapping were linked through another mapping's "
                                "entry: check this group").strip(" |")
@@ -656,19 +646,19 @@ def _md_header(result: Dict) -> List[str]:
 
 
 def _md_per_construct(result: Dict) -> List[str]:
-    L = ["## Sites per construct", "",
+    lines = ["## Sites per construct", "",
          "| Construct | copies/haploid | ceiling | certain | vector-end | "
          "copy-ceiling | site count | unresolved candidate for |",
          "|---|---|---|---|---|---|---|---|"]
     for n, d in result["per_construct"].items():
-        L.append("| %s | %s | %s | %d | %d | %d | **%s** | %d |"
+        lines.append("| %s | %s | %s | %d | %d | %d | **%s** | %d |"
                  % (n,
                     "%.2f" % d["copies_per_haploid"]
                     if d["copies_per_haploid"] is not None else "not reported",
                     d["ceiling"] if d["ceiling"] is not None else "unknown",
                     d["certain"], d["vector_end"], d["copy_ceiling"],
                     d["site_range"], d["unresolved_candidate_for"]))
-    return L + ["",
+    return lines + ["",
                 "The floor is certain + vector-end loci: the tiers that do "
                 "not depend on the copy number. The upper bound is the "
                 "copy-number ceiling, ceil(copies x ploidy / "
@@ -682,11 +672,11 @@ def _md_accounting(result: Dict) -> List[str]:
     rows = result.get("site_accounting") or []
     if not rows:
         return []
-    L = ["## Do the called sites account for the DNA?", "",
+    lines = ["## Do the called sites account for the DNA?", "",
          "| Construct | copies/haploid | sites the DNA implies | attributed | "
          "unaccounted for | |", "|---|---|---|---|---|---|"]
     for r in rows:
-        L.append("| %s | %s | %s | %d | %s | %s |"
+        lines.append("| %s | %s | %s | %d | %s | %s |"
                  % (r["construct"],
                     "%.2f" % r["copies_per_haploid"]
                     if r["copies_per_haploid"] is not None else "not reported",
@@ -695,7 +685,7 @@ def _md_accounting(result: Dict) -> List[str]:
                     r["attributed"],
                     r["unaccounted"] if r["unaccounted"] is not None else "-",
                     r["verdict"]))
-    return L + ["", "The sites the DNA implies is the copy-number ceiling, "
+    return lines + ["", "The sites the DNA implies is the copy-number ceiling, "
                 "ceil(copies x ploidy / min_copies_per_site). A shortfall "
                 "means missing sites, an extrachromosomal pool, or more "
                 "copies per site than the divisor assumes.", ""]
@@ -708,7 +698,7 @@ def _md_collapse(result: Dict) -> List[str]:
             "| entries read from all mapping tables | %d |" % result["n_entries"],
             "| unified loci after cross-mapping collapse | %d |"
             % result["n_unified"],
-            "| called (support >= %d in >= %d samples) | %d |"
+            "| called (total support >= %d, in >= %d samples) | %d |"
             % (p["min_reads"], p["min_samples"], result["n_called"]),
             "| sub-threshold (single-read / noise tail) | %d |" % result["n_sub"],
             "",
@@ -723,29 +713,29 @@ def _md_unresolved(result: Dict) -> List[str]:
     if not unres:
         return ["## Unresolved loci", "",
                 "None: every called locus was attributed.", ""]
-    L = ["## Unresolved loci", "",
+    lines = ["## Unresolved loci", "",
          "Listed once each, attributed to no construct. These are the "
          "validation priorities (`references/validation.md`).", "",
          "| Locus | candidates | support | samples | why |",
          "|---|---|---|---|---|"]
     for u in unres:
-        L.append("| %s:%d-%d | %s | %d | %d | %s |"
+        lines.append("| %s:%d-%d | %s | %d | %d | %s |"
                  % (u["contig"], u["start"], u["end"],
                     ", ".join(u["candidates"]) or "none",
                     u["total_support"], u["n_samples"], u["note"]))
-    return L + [""]
+    return lines + [""]
 
 
 def render_md(result: Dict) -> str:
-    L = _md_header(result)
+    lines = _md_header(result)
     if result["caveats"]:
-        L += ["## Read this before using any count below", ""]
-        L += ["> %s" % c for c in result["caveats"]] + [""]
-    L += _md_per_construct(result)
-    L += _md_accounting(result)
-    L += _md_collapse(result)
-    L += _md_unresolved(result)
-    return "\n".join(L)
+        lines += ["## Read this before using any count below", ""]
+        lines += ["> %s" % c for c in result["caveats"]] + [""]
+    lines += _md_per_construct(result)
+    lines += _md_accounting(result)
+    lines += _md_collapse(result)
+    lines += _md_unresolved(result)
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------
@@ -770,7 +760,7 @@ def read_all_loci(tables: Dict[str, str]
     return entries, samples, per_table
 
 
-def preflight(a: argparse.Namespace, tables: Dict[str, str],
+def preflight(args: argparse.Namespace, tables: Dict[str, str],
               samples: Sequence[str], per_table: Dict[str, List[str]],
               copies: Dict[str, Optional[float]], assumed_ploidy: bool
               ) -> List[Tuple[str, str, str]]:
@@ -799,13 +789,13 @@ def preflight(a: argparse.Namespace, tables: Dict[str, str],
             "only because one mapping run never saw that sample."
             % "; ".join("%s: %s" % (m, ", ".join(ss) or "none")
                         for m, ss in odd.items())))
-    if a.min_samples > len(samples):
+    if args.min_samples > len(samples):
         out.append(("min_samples", FAIL,
             "--min-samples is %d but only %d sample(s) were supplied, so NO "
             "locus can be called. Lower it deliberately (and say so), or add "
             "the other samples' loci tables."
-            % (a.min_samples, len(samples))))
-    ends = parse_ends(a.vector_ends)
+            % (args.min_samples, len(samples))))
+    ends = parse_ends(args.vector_ends)
     missing_ends = [m for m in tables if m not in ends or not ends[m]]
     if missing_ends:
         out.append(("vector_ends", WARN,
@@ -833,7 +823,8 @@ PREFLIGHT_CHECKS = (
 )
 
 
-def ceiling_divisor_finding(a: argparse.Namespace, measured: Optional[float],
+def ceiling_divisor_finding(args: argparse.Namespace,
+                            measured: Optional[float],
                             modality: Optional[str]) -> Optional[str]:
     """Is the ceiling nominal where the run's own measurement could bind it?
 
@@ -843,7 +834,7 @@ def ceiling_divisor_finding(a: argparse.Namespace, measured: Optional[float],
     """
     capable = (MODALITIES.get(modality or "auto") or {}).get("concatemers")
     if (measured is None or measured <= 1.0 or capable is False
-            or a.min_copies_per_site != 1.0):
+            or args.min_copies_per_site != 1.0):
         return None
     return ("--min-copies-per-site was left at 1, but the copy-number stage "
             "measured %.4g copies per site on this line. With a divisor of 1 "
@@ -940,9 +931,9 @@ def stage_checks(checks: Checks, found: Sequence[Tuple[str, str, str]],
     return checks
 
 
-def build_result(a: argparse.Namespace, tables: Dict[str, str],
+def build_result(args: argparse.Namespace, tables: Dict[str, str],
                  samples: Sequence[str], cn_how: str, ploidy: float,
-                 implied_ploidy: Optional[float], entries: Sequence[Dict],
+                 ploidy_source: str, entries: Sequence[Dict],
                  unified: Sequence[Dict], called: Sequence[Dict],
                  sub: Sequence[Dict], caps: Dict[str, Optional[int]],
                  used: Dict[str, int], per_construct: Dict[str, Dict],
@@ -956,52 +947,54 @@ def build_result(a: argparse.Namespace, tables: Dict[str, str],
         "mappings": sorted(tables),
         "samples": list(samples),
         "copy_number_source": cn_how,
-        "parameters": {"window": a.window, "min_reads": a.min_reads,
-                       "min_samples": a.min_samples, "end_tol": a.end_tol,
+        "parameters": {"window": args.window, "min_reads": args.min_reads,
+                       "min_samples": args.min_samples,
+                       "end_tol": args.end_tol,
                        "ploidy": ploidy,
-                       "min_copies_per_site": a.min_copies_per_site,
-                       "cn_margin": a.cn_margin,
-                       "ploidy_source": ("--ploidy" if a.ploidy is not None
-                                         else "copy-number JSON"
-                                         if implied_ploidy else "assumed 2")},
+                       "min_copies_per_site": args.min_copies_per_site,
+                       "cn_margin": args.cn_margin,
+                       "ploidy_source": ploidy_source},
         "n_entries": len(entries), "n_unified": len(unified),
         "n_called": len(called), "n_sub": len(sub),
         "ceilings": caps,
         "attributed": used,
         "per_construct": per_construct,
-        "unresolved": [{"contig": L["contig"], "start": L["start"],
-                        "end": L["end"], "candidates": L["candidates"],
-                        "total_support": L["total_support"],
-                        "n_samples": L["n_samples"],
-                        "note": L["attribution_note"]}
-                       for L in called if not L["construct"]],
+        "unresolved": [{"contig": locus["contig"], "start": locus["start"],
+                        "end": locus["end"], "candidates": locus["candidates"],
+                        "total_support": locus["total_support"],
+                        "n_samples": locus["n_samples"],
+                        "note": locus["attribution_note"]}
+                       for locus in called if not locus["construct"]],
         "caveats": list(caveats),
     }
 
 
-def write_outputs(a: argparse.Namespace, result: Dict, called: Sequence[Dict],
+def write_outputs(args: argparse.Namespace, result: Dict,
+                  called: Sequence[Dict],
                   sub: Sequence[Dict], samples: Sequence[str]) -> None:
-    if a.out_called:
+    if args.out_called:
         tail: Sequence[str] = ()
-        if a.genes:
+        if args.genes:
             from host_reference import ANNOT_COLS, annotate_rows
-            called = annotate_rows(called, a.genes)
+            called = annotate_rows(called, args.genes)
             tail = ANNOT_COLS
             regions: Dict[str, int] = {}
-            for L in called:
-                regions[L["host_region"]] = regions.get(L["host_region"], 0) + 1
-            result["host_annotation"] = {"genes": a.genes, "regions": regions}
-        write_table(a.out_called, called, samples, tail=tail)
-    if a.out_subthreshold:
-        write_table(a.out_subthreshold, sub, samples, extra=["reason"])
+            for locus in called:
+                reg = locus["host_region"]
+                regions[reg] = regions.get(reg, 0) + 1
+            result["host_annotation"] = {"genes": args.genes,
+                                         "regions": regions}
+        write_table(args.out_called, called, samples, tail=tail)
+    if args.out_subthreshold:
+        write_table(args.out_subthreshold, sub, samples, extra=["reason"])
     md = render_md(result)
-    if a.md:
-        with open(a.md, "w", encoding="utf-8") as fh:
+    if args.md:
+        with open(args.md, "w", encoding="utf-8") as fh:
             fh.write(md)
-    if a.summary:
-        with open(a.summary, "w", encoding="utf-8") as fh:
+    if args.summary:
+        with open(args.summary, "w", encoding="utf-8") as fh:
             json.dump(result, fh, indent=2)
-    if not a.md and not a.summary:
+    if not args.md and not args.summary:
         print(md)
 
 
@@ -1069,114 +1062,146 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main(argv=None) -> int:
-    a = build_parser().parse_args(argv)
-
-    measured_cps: Optional[float] = None
-    run_modality: Optional[str] = None
+def merge_manifest(args: argparse.Namespace) -> Tuple[Optional[object], Dict]:
+    """Fill unset arguments from the run manifest and name this stage's
+    outputs in it. Explicit flags win. Returns the run and what the earlier
+    stages recorded that is not an argument (measured copies per site, the
+    modality, and where the ploidy came from)."""
+    given: Dict = {"copies_per_site": None, "modality": None,
+                   "ploidy_source": "--ploidy" if args.ploidy is not None
+                                    else ""}
     try:
-        run = load_run(a.run)
-        if run is not None:
-            # Everything the earlier stages recorded; explicit flags win.
-            given = reconcile_inputs(run)
-            a.identity = a.identity or given["identity"] or ""
-            if not a.genes and run.stage("host").get("genes"):
-                a.genes = run.resolve(run.stage("host")["genes"])
-            a.loci = a.loci or ["%s=%s" % kv for kv in given["loci"].items()]
-            a.vector_ends = a.vector_ends or [
-                "%s=%s" % (m, ",".join(str(e) for e in ends))
-                for m, ends in given["vector_ends"].items()]
-            if not a.copy_number and not a.copies:
-                a.copy_number = given["copy_number"] or ""
-            if a.ploidy is None and given["ploidy"] is not None:
-                a.ploidy = float(given["ploidy"])
-            measured_cps, run_modality = (given["copies_per_site"],
-                                          given["modality"])
-            a.out_called = run.output(a.out_called, "called_sites.tsv")
-            a.out_subthreshold = run.output(a.out_subthreshold,
-                                            "subthreshold_sites.tsv")
-            a.summary = run.output(a.summary, "site_summary.json")
-            a.md = run.output(a.md, "site_summary.md")
+        run = load_run(args.run)
     except RunError as exc:
-        print("error: %s" % exc, file=sys.stderr)
-        return 2
-    if not a.identity or not a.loci:
-        print("error: need --identity and at least one --loci MAPPING=PATH, "
-              "or --run with a manifest that Stages 1 and 2 have recorded "
-              "them in", file=sys.stderr)
-        return 2
-    if a.genes and not os.path.exists(a.genes):
-        print("error: host gene table %s not found: rerun host_reference.py "
-              "or drop --genes" % a.genes, file=sys.stderr)
-        return 2
-
+        raise InputError(str(exc))
+    if run is None:
+        return None, given
     try:
-        ident = load_json(a.identity)
-        tables = parse_kv(a.loci, "--loci")
-        ends = parse_ends(a.vector_ends)
-        explicit = parse_kv(a.copies, "--copies")
+        recorded = reconcile_inputs(run)
+        args.identity = args.identity or recorded["identity"] or ""
+        if not args.genes and run.stage("host").get("genes"):
+            args.genes = run.resolve(run.stage("host")["genes"])
+        args.loci = args.loci or ["%s=%s" % kv
+                                  for kv in recorded["loci"].items()]
+        args.vector_ends = args.vector_ends or [
+            "%s=%s" % (m, ",".join(str(e) for e in ends))
+            for m, ends in recorded["vector_ends"].items()]
+        # --copies overrides the JSON only for the constructs it names, so
+        # the manifest's copy-number JSON is still read underneath it.
+        args.copy_number = args.copy_number or recorded["copy_number"] or ""
+        if args.ploidy is None and recorded["ploidy"] is not None:
+            args.ploidy = float(recorded["ploidy"])
+            given["ploidy_source"] = "run manifest"
+        given["copies_per_site"] = recorded["copies_per_site"]
+        given["modality"] = recorded["modality"]
+        args.out_called = run.output(args.out_called, "called_sites.tsv")
+        args.out_subthreshold = run.output(args.out_subthreshold,
+                                           "subthreshold_sites.tsv")
+        args.summary = run.output(args.summary, "site_summary.json")
+        args.md = run.output(args.md, "site_summary.md")
+    except RunError as exc:
+        raise InputError(str(exc))
+    return run, given
+
+
+def read_inputs(args: argparse.Namespace) -> Dict:
+    """Every input this stage reads from disk, validated against each other.
+
+    Raises `InputError` for anything that makes the stage unanswerable: a
+    missing identity map or loci table, a construct not in the map, an
+    unreadable copy-number JSON, a ploidy that is not positive.
+    """
+    if not args.identity or not args.loci:
+        raise InputError("need --identity and at least one --loci "
+                         "MAPPING=PATH, or --run with a manifest that Stages "
+                         "1 and 2 have recorded them in")
+    if args.genes and not os.path.exists(args.genes):
+        raise InputError("host gene table %s not found: rerun "
+                         "host_reference.py or drop --genes" % args.genes)
+    try:
+        ident = load_json(args.identity)
+        tables = parse_kv(args.loci, "--loci")
+        ends = parse_ends(args.vector_ends)
+        explicit = parse_kv(args.copies, "--copies")
     except (OSError, ValueError) as exc:
-        print("error: %s" % exc, file=sys.stderr)
-        return 2
+        raise InputError(str(exc))
 
     known = list(ident.get("construct_order") or ident["constructs"])
     for name in list(tables) + list(ends) + list(explicit):
         if name not in known:
-            print("error: %r is not in the identity map (%s). Every construct "
-                  "in the line must be in the map, including ones the "
-                  "provider did not map against."
-                  % (name, ", ".join(known)), file=sys.stderr)
-            return 2
-
+            raise InputError(
+                "%r is not in the identity map (%s). Every construct in the "
+                "line must be in the map, including ones the provider did "
+                "not map against." % (name, ", ".join(known)))
     try:
         entries, samples, per_table = read_all_loci(tables)
-    except (OSError, ValueError) as exc:
-        print("error: %s" % exc, file=sys.stderr)
-        return 2
-
-    try:
         copies, implied_ploidy, cn_how = load_copies(
-            a.copy_number or None, explicit, a.cn_sample or None)
+            args.copy_number or None, explicit, args.cn_sample or None)
     except (OSError, ValueError) as exc:
-        print("error: %s" % exc, file=sys.stderr)
-        return 2
+        raise InputError(str(exc))
+    return {"ident": ident, "known": known, "tables": tables, "ends": ends,
+            "entries": entries, "samples": samples, "per_table": per_table,
+            "copies": copies, "implied_ploidy": implied_ploidy,
+            "cn_how": cn_how}
 
-    ploidy = a.ploidy if a.ploidy is not None else implied_ploidy
-    found = preflight(a, tables, samples, per_table, copies, ploidy is None)
-    caveats = [msg for _, _, msg in found]
+
+def resolve_ploidy(args: argparse.Namespace, implied: Optional[float],
+                   source: str) -> Tuple[float, str, bool]:
+    """The ploidy to use, where it came from, and whether it was assumed."""
+    ploidy = args.ploidy if args.ploidy is not None else implied
+    if ploidy is not None and ploidy <= 0:
+        raise InputError("ploidy must be greater than 0, got %g (from %s)"
+                         % (ploidy, source or "the copy-number JSON"))
     if ploidy is None:
-        ploidy = 2.0
+        return 2.0, "assumed 2", True
+    return ploidy, source or "copy-number JSON", False
 
-    unified = collapse(entries, a.window, samples)
-    called, sub = retain(unified, a.min_reads, a.min_samples)
-    caps = ceilings(copies, known, ploidy, a.min_copies_per_site)
-    used, attr_caveats = attribute(called, known, copies, caps, ends,
-                                   a.end_tol, a.cn_margin)
+
+def compute_sites(args: argparse.Namespace, inputs: Dict, ploidy: float,
+                  given: Dict) -> Dict:
+    """Collapse, retain, attribute, count -- the stage's whole computation.
+
+    Reads nothing and writes nothing, so the site result is testable on its
+    inputs alone.
+    """
+    known, tables = inputs["known"], inputs["tables"]
+    copies, samples = inputs["copies"], inputs["samples"]
+    found = preflight(args, tables, samples, inputs["per_table"], copies,
+                      given["ploidy_assumed"])
+    caveats = [msg for _, _, msg in found]
+
+    unified = collapse(inputs["entries"], args.window, samples)
+    called, sub = retain(unified, args.min_reads, args.min_samples)
+    caps = ceilings(copies, known, ploidy, args.min_copies_per_site)
+    used, attr_caveats = attribute(called, known, copies, caps,
+                                   inputs["ends"], args.end_tol,
+                                   args.cn_margin)
     caveats += attr_caveats
-    divisor = ceiling_divisor_finding(a, measured_cps, run_modality)
+    divisor = ceiling_divisor_finding(args, given["copies_per_site"],
+                                      given["modality"])
     if divisor:
         caveats.append(divisor)
-    constructs = [n for n in known if n in tables or copies.get(n) is not None]
+    constructs = [n for n in known
+                  if n in tables or copies.get(n) is not None]
     per_construct = site_counts(called, constructs, copies, caps)
-    n_unresolved = sum(1 for L in called if not L["construct"])
+    n_unresolved = sum(1 for locus in called if not locus["construct"])
     accounting, shortfall = site_accounting(
-        per_construct, n_unresolved, ploidy / a.min_copies_per_site)
+        per_construct, n_unresolved, ploidy / args.min_copies_per_site)
     if shortfall:
         caveats.append(shortfall)
-    checks = stage_checks(Checks("reconcile_sites", a.accept), found,
-                          attr_caveats, divisor, len(called), shortfall)
+    return {"found": found, "unified": unified, "called": called, "sub": sub,
+            "caps": caps, "used": used, "per_construct": per_construct,
+            "attr_caveats": attr_caveats, "divisor": divisor,
+            "shortfall": shortfall, "accounting": accounting,
+            "caveats": caveats}
 
-    result = build_result(a, tables, samples, cn_how, ploidy, implied_ploidy,
-                          entries, unified, called, sub, caps, used,
-                          per_construct, caveats)
-    result["site_accounting"] = accounting
-    result["checks"] = checks.as_list()
-    write_outputs(a, result, called, sub, samples)
 
-    for c in caveats:
-        print("  CAVEAT: %s" % c, file=sys.stderr)
+def report_stderr(result: Dict, per_construct: Dict[str, Dict],
+                  n_entries: int, n_unified: int, n_called: int,
+                  n_sub: int) -> int:
+    """The stage's one-screen summary; returns the unresolved count."""
     print("collapsed %d entries -> %d unified loci; %d called, %d "
-          "sub-threshold" % (len(entries), len(unified), len(called), len(sub)),
+          "sub-threshold" % (n_entries, n_unified, n_called, n_sub),
           file=sys.stderr)
     for n, d in per_construct.items():
         print("    %-12s sites %-8s (certain %d, vector-end %d, copy-ceiling "
@@ -1185,18 +1210,64 @@ def main(argv=None) -> int:
                  d["copy_ceiling"],
                  d["ceiling"] if d["ceiling"] is not None else "unknown"),
               file=sys.stderr)
-    nu = len(result["unresolved"])
+    n_unresolved = len(result["unresolved"])
     print("    unresolved   %d (listed once each, attributed to no construct)"
-          % nu, file=sys.stderr)
+          % n_unresolved, file=sys.stderr)
+    return n_unresolved
+
+
+def run_stage(args: argparse.Namespace) -> int:
+    if args.min_copies_per_site <= 0:
+        raise InputError("--min-copies-per-site must be greater than 0, got "
+                         "%g" % args.min_copies_per_site)
+    run, given = merge_manifest(args)
+    inputs = read_inputs(args)
+    ploidy, ploidy_source, assumed = resolve_ploidy(
+        args, inputs["implied_ploidy"], given["ploidy_source"])
+    given["ploidy_assumed"] = assumed
+
+    computed = compute_sites(args, inputs, ploidy, given)
+    checks = stage_checks(Checks("reconcile_sites", args.accept),
+                          computed["found"], computed["attr_caveats"],
+                          computed["divisor"], len(computed["called"]),
+                          computed["shortfall"])
+
+    result = build_result(args, inputs["tables"], inputs["samples"],
+                          inputs["cn_how"], ploidy, ploidy_source,
+                          inputs["entries"], computed["unified"],
+                          computed["called"], computed["sub"],
+                          computed["caps"], computed["used"],
+                          computed["per_construct"], computed["caveats"])
+    result["site_accounting"] = computed["accounting"]
+    result["checks"] = checks.as_list()
+    write_outputs(args, result, computed["called"], computed["sub"],
+                  inputs["samples"])
+
+    n_unresolved = report_stderr(result, computed["per_construct"],
+                                 len(inputs["entries"]),
+                                 len(computed["unified"]),
+                                 len(computed["called"]),
+                                 len(computed["sub"]))
     if run is not None:
         run.record("reconcile", {
-            "called": run.relative(a.out_called),
-            "subthreshold": run.relative(a.out_subthreshold),
-            "summary": run.relative(a.summary), "md": run.relative(a.md),
-            "sites": {n: d["site_range"] for n, d in per_construct.items()},
-            "unresolved": nu, "annotated": bool(a.genes),
+            "called": run.relative(args.out_called),
+            "subthreshold": run.relative(args.out_subthreshold),
+            "summary": run.relative(args.summary),
+            "md": run.relative(args.md),
+            "sites": {n: d["site_range"]
+                      for n, d in computed["per_construct"].items()},
+            "unresolved": n_unresolved, "annotated": bool(args.genes),
             "checks": checks.as_list()})
-    return checks.finish(a.strict)
+    return checks.finish(args.strict)
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return run_stage(args)
+    except InputError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

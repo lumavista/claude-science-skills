@@ -587,7 +587,8 @@ def decide(declared: Dict, contigs: Dict[str, int], fai: Dict[str, int],
                    "reads were mapped against, and set host.assembly to its "
                    "NCBI accession." % (species, cell, ", ".join(
                        "%s %s" % (x["common"], x["assembly"])
-                       for x in CATALOGUE)))
+                       for x in CATALOGUE)),
+                   acceptable=False)
         return None, None, {}, ""
     if not contigs and not fai:
         if len(pool) == 1:
@@ -598,7 +599,8 @@ def decide(declared: Dict, contigs: Dict[str, int], fai: Dict[str, int],
                    "no host evidence: no host contigs in the junction tables "
                    "and no host.fai, and no species or cell line declared. "
                    "Ask the user which organism the line is and which "
-                   "assembly the reads were mapped against.")
+                   "assembly the reads were mapped against.",
+                   acceptable=False)
         return None, None, {}, ""
 
     scored, unreachable = [], []
@@ -645,7 +647,7 @@ def decide(declared: Dict, contigs: Dict[str, int], fai: Dict[str, int],
                "supply host.fai and host.annotation."
                % (", ".join(sorted(contigs)[:8]) or "from host.fai",
                   "; ".join(line(x) for x in scored)))
-    checks.add("host_species", FAIL, msg)
+    checks.add("host_species", FAIL, msg, acceptable=False)
     return None, None, {"candidates": [
         {"species": x[0]["species"], "assembly": x[0]["assembly"],
          "accession": x[0]["accession"], "fits": x[2]["fits"]}
