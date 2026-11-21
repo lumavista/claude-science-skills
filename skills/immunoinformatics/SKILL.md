@@ -2,7 +2,7 @@
 name: immunoinformatics
 description: Predicts and triages T-cell and B-cell epitopes for vaccine design — MHC class I and II binding (NetMHCpan, NetMHCIIpan, MHCflurry, MixMHCpred), linear and conformational B-cell epitopes (BepiPred, DiscoTope, SEMA), IEDB validated epitopes, HLA population coverage, human-proteome self-similarity screening, and mosaic or cocktail immunogen design with junctional neo-epitope checks.
 license: MIT
-compatibility: Python 3.10+. MHCflurry 2.1 and the IEDB web APIs need network access and run anywhere. NetMHCpan-4.1, NetMHCIIpan-4.3, BepiPred-3.0 and DiscoTope-3.0 are DTU academic-licence tools installed separately; scripts use them if present, else fall back. Conformational prediction needs a structure.
+compatibility: Python 3.11+ (MHCflurry on PyPI now declares requires_python >=3.11). MHCflurry 2.3 and the IEDB web APIs need network access and run anywhere. NetMHCpan-4.1, NetMHCIIpan-4.3, BepiPred-3.0 and DiscoTope-3.0 are DTU academic-licence tools installed separately; scripts use them if present, else fall back. Conformational prediction needs a structure.
 metadata:
   version: "1.1"
   skill-author: LumaVista.BIO
@@ -30,7 +30,7 @@ II rankings with equal confidence.
 ## Install
 
 ```bash
-pip install "mhcflurry>=2.1" "biopython>=1.83" "pandas>=2.0" "requests>=2.31"
+pip install "mhcflurry>=2.3,<2.4" "biopython>=1.83" "pandas>=2.0" "requests>=2.31"
 ```
 
 ### Setup MHCflurry models (one-time)
@@ -41,8 +41,12 @@ Download and cache MHCflurry models in the skill directory so they're available 
 bash skills/immunoinformatics/setup_models.sh
 ```
 
-This downloads presentation and affinity models to `skills/immunoinformatics/models/mhcflurry/`, 
-which the skill then uses automatically. Models are cached in git so subsequent runs don't require internet.
+This downloads presentation and affinity models to
+`skills/immunoinformatics/models/mhcflurry/`. `epitope_triage.py` and
+`predict_mhc_with_fallback.py` both look there and use it without further setup.
+The weights are **not** committed — `.gitignore` excludes that directory, so a
+fresh clone needs one network run of this script, after which the cache is
+local and subsequent runs are offline.
 
 If you prefer to manage the cache location yourself, set the environment variable before running:
 
@@ -262,10 +266,20 @@ python scripts/epitope_triage.py coverage \
   --candidates work/flagged.tsv --population "World" --out work/coverage.tsv
 ```
 
-Calls IEDB's population coverage tool. Report the fraction expected to present
-at least one candidate **per region** as well as globally — a construct at 95%
-world coverage can sit far lower in a specific population, which is exactly the
-gap that matters for deployment.
+**Prepares the input file** for IEDB's population coverage tool and prints the
+submission URL; it does not call the tool, so the coverage number itself comes
+from that submission. Report the fraction expected to present at least one
+candidate **per region** as well as globally — a construct at 95% world coverage
+can sit far lower in a specific population, which is exactly the gap that
+matters for deployment.
+
+Coverage is computed over **predicted binders only**: `--max-rank` defaults to
+2.0 on the percentile-rank column, because `mhc1` applies no cutoff of its own
+and feeding its full output in would put every enumerated peptide into the
+coverage set and return a meaningless ~100%. Self-flagged rows are excluded
+too. The cutoff, and the counts dropped by it, are recorded in the sidecar.
+Passing `--max-rank ''` disables it and the script says so — if you do that, the
+figure is not deployability evidence and the write-up must state it.
 
 ### 9. Multivalent construct, if breadth demands one
 
@@ -282,12 +296,21 @@ python scripts/mosaic_design.py evaluate --fasta work/panel.fasta \
   --designs work/my_construct.fasta -k 9 --out work/construct_eval
 ```
 
-**Mosaic mode cannot create junctional neo-epitopes** — it walks a de Bruijn
-graph built from the panel, so every output k-mer occurs in some real strain by
-construction, verified by the script, which fails loudly otherwise. **Check any
-other construct with `evaluate`**, since naive concatenation, string-of-beads
-and fusion designs all create junction-spanning peptides that exist in no real
-strain; run it at k=9 and again at k=15 for class I and class II registers.
+**Mosaic mode cannot create junctional neo-epitopes _at the k it was built
+with_** — it walks a de Bruijn graph built from the panel, so every output
+k-mer *of that length* occurs in some real strain by construction, verified by
+the script, which fails loudly otherwise. **The guarantee does not extend to
+longer registers.** A mosaic built at k=9 that recombines two variable sites
+ten residues apart creates 15-mers present in no strain: measured on a
+three-strain panel, a recombinant with 0 novel 9-mers carried 6 novel 15-mers.
+So `mosaic` now screens the longer registers too (`--check-k`, default `9,15`),
+fails only at the build k, and reports the rest — any novel k-mer it finds is
+written to `<out>.novel_kmers.tsv` with a `peptide` column, which feeds straight
+into `epitope_triage.py selfcheck` to establish whether the novel register is
+self-similar. **Check any other construct with `evaluate`**, since naive
+concatenation, string-of-beads and fusion designs all create junction-spanning
+peptides that exist in no real strain; run it at k=9 and again at k=15 for class
+I and class II registers.
 
 **Read the coverage output honestly.** The aggregate is the misleading number —
 a design can reach 90% weighted coverage while an entire clade sits near zero,

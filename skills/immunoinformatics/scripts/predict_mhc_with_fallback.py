@@ -4,20 +4,22 @@ Hybrid MHC prediction with fallback routing (no simulations).
 
 Route MHC binding prediction based on available resources:
 1. Local MHCflurry (if model can be downloaded)
-2. IEDB API for queried alleles
-3. NetMHCpan server (if installed locally)
-4. Fail with clear instructions (no synthetic predictions)
+2. NetMHCpan, if installed locally (DTU academic licence)
+3. Fail with clear instructions (no synthetic predictions)
+
+Rank on `percentile_rank`, never on `affinity_nM`. There is no IEDB-API route
+here despite earlier docs claiming one.
 
 Usage:
-    from predict_mhc_with_fallback import predict_mhc_class1
+    from predict_mhc_with_fallback import predict_mhc_class1_with_fallback
 
-    results = predict_mhc_class1(
+    results = predict_mhc_class1_with_fallback(
         peptides=["FVFSTSFYL", "YVFSTSFYL"],
         alleles=["HLA-A*02:01", "HLA-A*11:01"],
         include_percentile=True,
     )
     for row in results:
-        print(f"{row['peptide']} → {row['allele']}: {row['percentile']:.3f}%")
+        print(f"{row['peptide']} → {row['allele']}: {row['percentile_rank']:.3f}%")
 """
 
 import os
@@ -41,7 +43,8 @@ def detect_mhc_environment() -> Dict[str, Any]:
         "platform": platform.system(),
         "can_use_mhcflurry": False,
         "can_use_netmhcpan": False,
-        "can_use_iedb_api": True,  # Always available if internet
+        # No can_use_iedb_api key: there is no IEDB prediction route in this
+        # module, and advertising one sent callers looking for it.
         "mhcflurry_version": None,
         "netmhcpan_path": None,
     }
@@ -220,6 +223,66 @@ def predict_with_mhcflurry(
     return results
 
 
+def _parse_netmhcpan(stdout: str) -> List[Dict[str, Any]]:
+    """Parse NetMHCpan 4.1 tabular output by column NAME.
+
+    Real output is "Pos MHC Peptide Core Of Gp Gl Ip Il Icore Identity
+    Score_EL %Rank_EL [Score_BA Affinity(nM) %Rank_BA]". The old positional
+    parse read Pos as the allele, the allele as the peptide, and applied
+    float() to the Core sequence -- an uncaught ValueError. Rank on
+    percentile_rank, never on affinity_nM.
+    """
+    def col(fields, *names):
+        for n in names:
+            if n in fields:
+                return fields.index(n)
+        return None
+
+    fields = None
+    idx: Dict[str, Optional[int]] = {}
+    results: List[Dict[str, Any]] = []
+    for line in stdout.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == "Pos" and "Peptide" in parts:
+            fields = parts
+            idx = {"pep": col(fields, "Peptide"),
+                   "mhc": col(fields, "MHC", "Allele"),
+                   "el": col(fields, "%Rank_EL", "%Rank"),
+                   "aff": col(fields, "Affinity(nM)", "Affinity")}
+            if idx["pep"] is None or idx["mhc"] is None or idx["el"] is None:
+                raise MHCPredictionError(
+                    "NetMHCpan output lacks Peptide/MHC/%Rank_EL columns; "
+                    "refusing to guess. Columns seen: " + " ".join(fields))
+            continue
+        if fields is None or not parts[0].isdigit():
+            continue
+
+        def val(key, row=parts):
+            i = idx.get(key)
+            if i is None or i >= len(row):
+                return float("nan")
+            try:
+                return float(row[i])
+            except ValueError:
+                return float("nan")
+
+        results.append({
+            "peptide": parts[idx["pep"]],
+            "allele": parts[idx["mhc"]],
+            "affinity_nM": val("aff"),
+            "percentile_rank": val("el"),
+            "backend": "netmhcpan",
+            "backend_version": "server",
+        })
+
+    if fields is None:
+        raise MHCPredictionError(
+            "could not find NetMHCpan's column header in its output")
+    return results
+
+
 def predict_with_netmhcpan(
     peptides: List[str],
     alleles: List[str],
@@ -238,16 +301,18 @@ def predict_with_netmhcpan(
     """
     print(f"[predict_mhc_with_fallback] Using NetMHCpan: {netmhcpan_path}", file=sys.stderr)
 
-    # Write peptides to temp FASTA
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".fasta", delete=False) as f:
-        for i, pep in enumerate(peptides):
-            f.write(f">pep_{i}\n{pep}\n")
-        fasta_path = f.name
+    # -p means "the input file is a plain peptide list", so it must be one
+    # peptide per line. The previous version wrote FASTA and passed -p, which
+    # fed the '>pep_0' header lines in as peptides.
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".pep", delete=False) as f:
+        for pep in peptides:
+            f.write(f"{pep}\n")
+        pep_path = f.name
 
     try:
         allele_str = ",".join(alleles)
         result = subprocess.run(
-            [netmhcpan_path, "-a", allele_str, "-p", fasta_path],
+            [netmhcpan_path, "-a", allele_str, "-p", pep_path],
             capture_output=True,
             text=True,
             timeout=300,
@@ -258,27 +323,10 @@ def predict_with_netmhcpan(
                 f"NetMHCpan failed: {result.stderr}"
             )
 
-        # Parse NetMHCpan output (format varies; simplified here)
-        results = []
-        for line in result.stdout.splitlines():
-            if line.startswith("#") or not line.strip():
-                continue
-            # This is simplified; real parsing depends on NetMHCpan output format
-            parts = line.split()
-            if len(parts) >= 4:
-                results.append({
-                    "peptide": parts[1],
-                    "allele": parts[0],
-                    "affinity_nM": float(parts[3]) if parts[3] != "nan" else float("nan"),
-                    "percentile_rank": float(parts[4]) if len(parts) > 4 else float("nan"),
-                    "backend": "netmhcpan",
-                    "backend_version": "server",
-                })
-
-        return results
+        return _parse_netmhcpan(result.stdout)
 
     finally:
-        Path(fasta_path).unlink(missing_ok=True)
+        Path(pep_path).unlink(missing_ok=True)
 
 
 def predict_mhc_class1_with_fallback(
