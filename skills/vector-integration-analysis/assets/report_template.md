@@ -33,9 +33,11 @@ through shared sequence and <N> other flagged artefacts, leaves <N> for this
 construct; <N> of those are the paired flanks of one site; giving **<N> distinct
 loci**. State any alternative reading and the count it would give.
 
-**How copy number was obtained.** Solved from per-base depth / inferred from
-boundary junctions / reported as an upper bound — say which, and if it is not
-the first, say what was requested to make it so.
+**How copy number was obtained.** Measured from unique-block depth / inferred
+from boundary junctions / reported as an upper bound. Say which, and if it is
+not the first, say what was requested to make it so. Name the baseline
+(genome-median depth or read count) and the shared-block closure. If the stacked
+solve went negative, say so, because it means the additive model was incomplete.
 
 **Main caveat.** <N> loci are proven by sequence; <N> are assigned by argument
 (section 5) and should be confirmed before being relied on.

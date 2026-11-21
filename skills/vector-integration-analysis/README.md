@@ -67,10 +67,15 @@ python scripts/copy_number.py config.json --md accounting.md --json accounting.j
 
 ## Copy number: measured, not estimated
 
-Given per-base depth over each vector reference, every membership class in the
-identity map yields one equation — depth over bases carried by constructs *S*
-equals the summed depth of those constructs — and the whole system is solved at
-once by weighted least squares. This works for any number of constructs.
+Given per-base depth over each vector reference, each construct's copy number
+is read directly from the depth over its own unique blocks, the bases no other
+construct carries. Every membership class also yields one equation: depth over
+bases carried by constructs *S* equals the summed depth of those constructs.
+That stacked system is solved by weighted least squares as a cross-check. A
+negative solution, or a deficit in shared-block depth, is reported as evidence
+that the additive model is incomplete (typically backbone loss in concatemers),
+never clamped to zero. Supply the genome-median depth as `baseline_depth` so the
+baseline is filtered the same way as the vector depth.
 
 ```bash
 samtools depth -a -r <vector_contig> SAMPLE.bam > depth_<construct>.txt
@@ -81,9 +86,11 @@ boundary estimator (two constructs only) or to an explicit upper bound, and
 **prints the caveat at the top of the report** — an undecomposed blend that
 looks like a measured number is how this analysis goes wrong quietly.
 
-The test suite verifies the solve against known ground truth: three constructs
-sharing 71% of their sequence, recovered to within 0.02 copies per haploid
-genome.
+The test suite checks the estimates against known ground truth. Three
+constructs sharing 71% of their sequence are recovered to within 0.02 copies
+per haploid genome. In a two-construct concatemer case (1.5 and 28 copies,
+shared backbone 15% under-represented), the low-copy construct is recovered
+at 1.5, not clamped to 0, and the deficit is reported at −15%.
 
 ## Input formats
 

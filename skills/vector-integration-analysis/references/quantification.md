@@ -8,7 +8,7 @@ Worked examples use round illustrative numbers, not figures from any dataset.
 ## Contents
 
 1. Genome coverage and units
-2. Copy number, route 1: solved from per-base depth
+2. Copy number, route 1: measured from per-base depth
 3. Copy number, route 2: the boundary-junction estimator
 4. Copy number, route 3: an honest upper bound
 5. Conversion factor (reads per junction per copy)
@@ -33,6 +33,17 @@ so the denominator must match.
 `genome_size` is the haploid genome size of the host — set it for the organism
 the line is, not for human by default.
 
+**Baseline for copy number.** When the genome-median per-base depth is
+available (`samtools depth` over the host genome, from the same BAM and with the
+same filters as the vector depth), supply it per sample as `baseline_depth`. It
+then replaces `C` as the single-genome baseline that vector depth is divided by.
+The read-count `C` is filtered differently from the vector depth (duplicates,
+MAPQ, unmapped mates, clipping) and in practice runs a few percent high, ~8% is
+typical, which biases **every** copy number low by the same factor. Without
+`baseline_depth` the script uses `C` as before. Either way it prints which
+baseline it used. The read-count `C` is still what the junction conversion
+factor (section 5) uses, because junction support is itself a read count.
+
 Everything downstream is in **copies per haploid genome equivalent**.
 Converting to copies per cell needs the ploidy: a pseudo-triploid line carries
 about 3 haploid equivalents, so multiply by 3. Many immortalised lines are
@@ -45,7 +56,7 @@ silent factor of 2 to 4.
 
 ---
 
-## 2. Copy number, route 1: solved from per-base depth
+## 2. Copy number, route 1: measured from per-base depth
 
 **This is the preferred route. Ask for the depth files.**
 
@@ -57,30 +68,91 @@ construct *i*, the expected depth at a base whose membership class is *S* is
 depth(S) = Σ_{j ∈ S} P_j
 ```
 
-where `P_j` is the true depth of construct *j*. Each membership class in each
-reference therefore gives one linear equation, and with *n* constructs you have
-far more equations than unknowns. `copy_number.py` solves the stacked system by
-weighted least squares, weighting each class by the number of bases it
-contributes, and clamps negative solutions to zero.
+where `P_j` is the true depth of construct *j*.
 
-Copies per haploid genome: divide each `P_j` by `C`.
+### The estimator: each construct's unique blocks
 
-### Why block edges must be trimmed
+The singleton class `S = {i}` holds the bases only construct *i* carries, so its
+depth is `P_i` directly. **`copy_number.py` reports each construct's copy number
+from its own unique-block depth, with no solve.** That estimate does not depend
+on any shared block, so it is not affected when the shared blocks fail to add
+up (see below).
+
+Copies per haploid genome: divide each `P_j` by the baseline (section 1).
+
+A construct with no usable unique block, because it has no depth file or too
+little unique sequence survives trimming, falls back to the stacked solve below
+for that construct only. The report flags it, because the value then inherits
+any non-additivity of the shared blocks.
+
+### The cross-check: the stacked solve, unconstrained
+
+Each membership class in each reference also gives one linear equation, so with
+*n* constructs there are more equations than unknowns. The script solves the
+stacked system by weighted least squares, weighting each class by its bases,
+**without a non-negativity constraint**, and prints the result beside the
+unique-block estimates as a consistency check. In a well-behaved line the two
+agree closely.
+
+### Shared-block closure, and what a negative solution means
+
+For every shared class the report prints observed depth against the depth the
+additive model predicts, which is the sum of its members' unique-block depths.
+It also prints the deficit as a percentage, per class and bp-weighted overall.
+
+Additivity fails routinely in concatemer lines. Arrays lose or rearrange part of
+the shared backbone at their junctions, so shared blocks carry less depth than
+`Σ P_j`. When one construct is high-copy and another low-copy, an all-class
+solve absorbs that deficit into the low-copy construct and can drive it below
+zero. Worked example: constructs at 1.5 and 28 copies, sharing 4.6 kb of
+backbone at 15% below additivity. The unconstrained solve puts the 1.5-copy
+construct at about −1.2. A clamped solve reports it as **0** and pulls the
+28-copy construct down to about 24.
+
+**A negative solution is a diagnostic, not a copy number. Never clamp it to
+zero.** The clamp turns "the model is incomplete" into "this construct is
+absent", which is a wrong biological answer that looks clean. When any
+construct's unconstrained value falls below −0.1 copies, the script puts a
+caveat at the top of the report saying the additive model is incomplete, most
+likely through partial loss of shared backbone. It reports the unique-block
+estimates and leaves the solve negative. If a construct without a unique block
+would get a negative value, no number is reported for it, instead of a zero.
+
+A closure **surplus** (shared blocks deeper than predicted) points the other
+way: host-homologous sequence in the shared region or an unlisted construct
+(see the residual candidates below).
+
+### Why block edges must be trimmed, and the trim-mode trade-off
 
 Within roughly one read length of a membership-class boundary, a read cannot
 lie wholly inside the block, so cross-mapping tapers off and the observed depth
 is neither the shared nor the unique value. Averaging across untrimmed blocks
 is the reason naive decomposition comes out several-fold high. The script trims
-`read_length` bases from each end of every block by default (`--edge-trim`) and
-drops classes with too few usable bases (`--min-class-bp`).
+`edge_trim` bases (default `read_length`, `--edge-trim`) and drops classes with
+too few usable bases (`--min-class-bp`).
+
+Where the trim applies is set by `--trim-mode` or `trim_mode` in the config:
+
+| Mode | Trims | Gains | Costs |
+|---|---|---|---|
+| `block-edge` (default) | `edge_trim` from both ends of **every** block | removes the boundary taper, so unique and shared depths are clean | discards a construct's small unique blocks outright. A fragmented unique set can leave a low-copy construct resting on a few hundred bp, or on none |
+| `contig-end` | only within `edge_trim` of the linear reference termini | keeps every interior unique base, so small unique blocks still count | leaves the taper in. Unique-block depth is biased up and shared-block depth down, by roughly `read_length ÷ block length` (small for kb-scale blocks, large for blocks near read length) |
+
+`block-edge` stays the default for backward compatibility. Whichever mode is
+used, the script warns, naming the construct and the bp, when a construct's
+retained unique sequence falls below 500 bp (`--min-unique-bp`), so a
+low-confidence estimate is visible. When that warning fires, rerun with
+`contig-end` and compare. If the two agree, the estimate is robust to the
+choice. If they disagree, the unique blocks are too short to give a clean
+number and the result should be reported with that uncertainty.
 
 This also explains why nominal and effective shared fractions differ: shared
 blocks shorter than a read contribute nothing to cross-mapping at all.
 
 ### Reading the residuals
 
-The report prints observed against predicted depth per class. Large residuals
-mean the block map does not explain the depth. Candidates, in order of
+The report prints observed depth against the stacked solve's prediction for
+each class. Large residuals mean the block map does not explain the depth. Candidates, in order of
 likelihood:
 
 - a vector element also present in the host genome — a human promoter, a poly(A)
@@ -88,8 +160,10 @@ likelihood:
   the vector reference;
 - an unlisted construct or helper plasmid in the line;
 - non-uniform library coverage, typically GC-driven;
-- a partially integrated construct, where the cassette and the backbone
-  genuinely carry different copy numbers. This one is a result, not an error.
+- a partially integrated construct, or backbone lost from concatemers, where
+  the cassette and the backbone genuinely carry different copy numbers. This
+  one is a result, not an error. It shows up as a shared-block closure deficit
+  and, at high copy-number contrast, as a negative solve.
 
 ### Getting the depth
 
@@ -99,6 +173,18 @@ samtools depth -a -r <vector_contig> SAMPLE.bam > depth_<construct>.txt
 
 Tiny output, one command, and it converts the copy number from bounded to
 measured. Request it for every vector reference that was mapped against.
+
+Ask for the genome-median depth too, from the **same BAM with the same
+filters**, over a few large autosomes of typical copy number:
+
+```bash
+samtools depth -a -r <autosome> SAMPLE.bam | cut -f3 | sort -n \
+  | awk '{v[NR]=$1} END {print v[int((NR+1)/2)]}'
+```
+
+Put the result in the config as the sample's `baseline_depth`. Prefer the median
+to the mean because it is not pulled around by repeats, amplifications or
+zero-coverage gaps.
 
 ---
 
@@ -285,6 +371,7 @@ locus, never alone.
 
 | Assumption | Breaks when | Symptom |
 |---|---|---|
+| Depths add over shared sequence | backbone lost or rearranged in concatemers | shared-block closure deficit; negative unconstrained solve for a low-copy construct |
 | Uniform mappability across the vector | vector contains sequence shared with the host genome | depth spikes; large positive residuals; junctions inside the shared element |
 | Reads deduplicated before junction calling | provider reports raw support | copy numbers inflated several-fold |
 | The identity map covers every construct present | a helper plasmid, third vector or bacterial backbone was carried over | unexplained junctions; depth residuals that no block class explains |

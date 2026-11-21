@@ -684,8 +684,10 @@ def solve_wls(rows: Sequence[Sequence[float]], y: Sequence[float],
     Systems here have as many unknowns as constructs -- a handful -- so normal
     equations with Gaussian elimination are ample and keep the skill
     dependency-free. `non_negative` clamps negative solutions to zero and
-    re-solves on the remaining free variables, since a copy number below zero
-    is not a physical answer.
+    re-solves on the remaining free variables. With `non_negative=False` the
+    unconstrained solution is returned as is, negatives included: a negative
+    copy number is not a physical answer, but it IS a diagnostic that the
+    linear model is incomplete, and clamping it would hide that.
 
     Returns None when the system is singular (the block classes do not
     distinguish the constructs).
@@ -714,7 +716,7 @@ def solve_wls(rows: Sequence[Sequence[float]], y: Sequence[float],
         if not non_negative or all(v >= -1e-9 for v in sol):
             out = [0.0] * n
             for i, idx in enumerate(free):
-                out[idx] = max(0.0, sol[i])
+                out[idx] = max(0.0, sol[i]) if non_negative else sol[i]
             return out
         drop = min(range(k), key=lambda i: sol[i])
         free.pop(drop)
