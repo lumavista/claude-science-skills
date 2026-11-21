@@ -223,14 +223,25 @@ pb = sc.get.aggregate(
 # Join condition/donor metadata, select one cell type and verify replication/design.
 ```
 
-For quick exploratory comparisons within a cluster, `rank_genes_groups` is acceptable but interpret p-values cautiously:
+**Never `groupby='condition'`.** A per-cell test across conditions treats every
+cell from a donor as an independent sample. It does not produce a weak p-value,
+it produces a wrong one: in a simulated null with 8 donors, a per-cell Wilcoxon
+called roughly 1,390 of 2,000 genes significant against 0-3 by donor pseudobulk.
+No amount of cautious interpretation recovers that, so there is no exploratory
+shortcut here — aggregate first.
 
 ```python
-adata_subset = adata[adata.obs['cell_type'] == 'T cells'].copy()
-sc.tl.rank_genes_groups(adata_subset, groupby='condition',
-                         groups=['treated'], reference='control')
-sc.pl.rank_genes_groups(adata_subset, groups=['treated'])
+# Condition DE within one cell type: pseudobulk per donor, then PyDESeq2.
+python scripts/pseudobulk.py annotated.h5ad \
+    --by donor cell_type --metadata condition --out-prefix results/pb
+# then, with the T-cell rows only:
+#   pydeseq2 skill -> run_deseq2_analysis.py --design "~condition"
 ```
+
+`rank_genes_groups` is for *describing* clusters you just defined — which genes
+mark cluster 3 — not for comparing conditions. Use it with
+`groupby='<cluster key>'`, read the ranking as a shortlist, and treat its
+p-values as a sorting key rather than evidence.
 
 ### Gene Set Scoring
 

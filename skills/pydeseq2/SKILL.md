@@ -19,6 +19,17 @@ measurements from the same donor are not independent biological replicates.
 Donor-level pseudobulk can be appropriate when its aggregation and design match
 the scientific question; this is not a single-cell per-cell testing workflow.
 
+**State the detectable effect before you run, and keep it beside every null
+result.** `run_deseq2_analysis.py` prints samples per tested level, raises below
+2 and warns below 4, and records `samples_per_level` in the manifest — because
+residual degrees of freedom are not replication, and a 2-vs-2 design otherwise
+produces a confident `significant_genes.csv` that carries no trace of how few
+samples it rested on. At 4 donors per arm and donor SD 0.35, recovery of true
+log2FC 1.0 genes is roughly a third and log2FC 0.5 is nil, so a gene that was
+not called is uninformative rather than unchanged. The arithmetic, and the
+`donor_de_sensitivity()` helper that computes it for your design:
+`statistical-power/references/donor_level_pseudobulk.md`.
+
 Current [PyDESeq2 0.5.4](https://github.com/scverse/PyDESeq2/releases/tag/v0.5.4)
 provides Wald tests and apeGLM-style coefficient shrinkage. Do not assume every
 feature or numerical result of current R DESeq2 is implemented identically.

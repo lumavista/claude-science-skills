@@ -201,12 +201,17 @@ pb = sc.get.aggregate(
 # Join condition/donor metadata, select one cell type and verify replication/design.
 ```
 
-For quick exploratory comparisons only:
+**There is no exploratory shortcut for condition DE.** `groupby='condition'` on
+cells is pseudoreplication: donors are the replicates, and a per-cell test
+inflates significance by orders of magnitude (simulated null, 8 donors:
+~1,390/2,000 genes called by per-cell Wilcoxon vs 0-3 by donor pseudobulk).
+Aggregate to pseudobulk per donor per cell type and test across donors.
 
 ```python
-sc.tl.rank_genes_groups(adata, groupby='condition', groups=['treated'],
-                         reference='control', method='wilcoxon')
-sc.pl.rank_genes_groups(adata, groups=['treated'])
+# scripts/pseudobulk.py writes counts + aligned metadata for PyDESeq2.
+# Reserve rank_genes_groups for marker ranking within a clustering:
+sc.tl.rank_genes_groups(adata, groupby='leiden', method='wilcoxon',
+                         tie_correct=True)
 ```
 
 ### Gene Set Scoring

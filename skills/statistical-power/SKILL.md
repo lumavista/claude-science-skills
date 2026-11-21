@@ -42,7 +42,9 @@ On Windows use `.venv-power/Scripts/python.exe`. Record versions and seeds with 
 2. A **pilot or prior estimate**, with a justified uncertainty model or sensitivity range rather than an arbitrary shrinkage factor — small pilots are imprecise and selection on significance inflates effects.
 3. A **convention** (Cohen's small/medium/large) only as a last resort, stated as such.
 
-Always run a **sensitivity analysis**: report how required n changes across a plausible range of effects, never a single number. Benchmarks and conversions between d, f, r, η²/f², OR, h, and w: `references/effect_sizes.md`.
+Always run a **sensitivity analysis**: report how required n changes across a plausible range of effects, never a single number — `sensitivity_table(test, effect_sizes)` returns exactly that table, and is the orthogonal axis to `power_curve`, which varies n at one fixed effect. Benchmarks and conversions between d, f, r, η²/f², OR, h, and w: `references/effect_sizes.md`.
+
+**For transcriptomics of vaccinated or infected subjects, donors are the replicates, not cells** — and the sensitivity calculation has its own closed form, because the unit of analysis is the donor-level pseudobulk profile. `donor_de_sensitivity()` gives the detectable log2 fold change and the two rules that follow from it: fewer than 4 donors per arm cannot support gene-level conclusions at all, and at 4 per arm a gene that was not called is uninformative rather than unchanged. Full derivation, the power table, and what makes real designs worse than it: `references/donor_level_pseudobulk.md`.
 
 > **Never produce post-hoc ("observed") power** — computing power from the effect you just estimated is circular and largely restates the p-value; report the MDE at the achieved n or the CI around the observed effect instead, and flag the issue even when observed power is explicitly requested.
 
@@ -133,11 +135,12 @@ The numbers above do not establish that d = 0.50 is clinically important. For si
 
 ## Resources
 
-- `scripts/power.py` — closed-form `sample_size`, `power`, `mde`, `power_curve`.
+- `scripts/power.py` — closed-form `sample_size`, `power`, `mde`, `power_curve`, `sensitivity_table`, `donor_de_sensitivity`.
 - `scripts/simulate_power.py` — `simulate_power()`, `find_sample_size()`, and worked examples (two-group, logistic, cluster-randomized, linear mixed model).
 - `references/closed_form_recipes.md` — per-test argument conventions and tested statsmodels/Pingouin calls.
 - `references/simulation_based_power.md` — simulation patterns for GLMs, mixed models, clusters, survival, dropout.
 - `references/effect_sizes.md` — SESOI choice, Cohen's benchmarks, effect-size conversions.
+- `references/donor_level_pseudobulk.md` — sensitivity for donor-level pseudobulk DE: the SE formula, the power table at sigma_donor 0.35, and why fewer than 4 donors per arm answers nothing. Cited by `scanpy` and `pydeseq2`.
 
 **Related skills** — **experimental-design** (lay out the study once n is known), **statistical-analysis** (assumption checks, running and reporting the test), **statsmodels** / **pymc** (fitting the models).
 

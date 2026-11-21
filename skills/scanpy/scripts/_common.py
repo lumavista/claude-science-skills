@@ -271,8 +271,17 @@ def select_backend(prefer=None):
     """
     global _backend_cache
     requested = (prefer or os.environ.get("SCI_DEVICE") or "").strip().lower()
+    if requested in ("cpu", "none"):
+        return None                     # an explicit, honoured CPU request
     if requested and not requested.startswith(("cuda", "gpu")):
-        return None
+        # Previously any unrecognised value (mps, rocm, xpu, a typo) silently
+        # took the CPU path. A forced device must fail loudly rather than
+        # quietly run somewhere the caller did not ask for -- the rule
+        # _device.py follows and the README states for the whole collection.
+        die(f"SCI_DEVICE={requested!r} is not a backend this skill can use. "
+            "scanpy's GPU route is rapids-singlecell/CUDA only: use 'cuda' to "
+            "require it, 'cpu' to force the CPU path, or unset SCI_DEVICE to "
+            "autodetect.")
     if _backend_cache is _UNPROBED:
         _backend_cache = _probe_backend()
         if _backend_cache is not None:

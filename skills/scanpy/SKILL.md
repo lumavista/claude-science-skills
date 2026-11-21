@@ -145,8 +145,11 @@ Scientific defaults and the parameters usually worth changing: `min_genes` 200-5
 1. Preserve counts in `adata.layers["counts"]` before normalizing, and confirm the layer or `.raw` you rank markers on is log-normalized — `.raw` is a snapshot, its name guarantees nothing. `use_raw=True` reads it as stored.
 2. Use Leiden; `sc.tl.louvain` is deprecated in 1.12. Try several resolutions rather than trusting one.
 3. Validate annotations against multiple marker genes, and check the PCA variance ratio before fixing `n_pcs`.
-4. Do not treat `rank_genes_groups` p-values as rigorous condition DE — aggregate to pseudobulk with counts instead.
-5. Save intermediates; long workflows fail partway. Record QC thresholds, parameters and the backend.
+4. Do not treat `rank_genes_groups` p-values as rigorous condition DE — aggregate to pseudobulk with counts instead. **Donors are the replicates, not cells**: a per-cell test across conditions called ~1,390 of 2,000 null genes significant where donor pseudobulk called 0–3. `scripts/pseudobulk.py` refuses below 2 donors per arm and warns below 4; the sensitivity arithmetic behind those thresholds is `statistical-power/references/donor_level_pseudobulk.md`, and a gene not called at 4 donors per arm is uninformative, not unchanged.
+5. **Cell-type fractions are compositional** — they sum to one, so one population rising mechanically forces the others down. Do not report each population's change as independent, and do not read a falling fraction as a population being depleted. Use a compositional method (scCODA, propeller, a Dirichlet-multinomial) or a CLR transform on the per-donor counts, or state plainly that the shifts are not independent. Compute fractions per donor and compare across donors, never pooled across cells.
+6. **Cell-type labels are assignments, not measurements.** Report the clustering resolution and the marker evidence behind each label, because every composition result depends on where the boundaries were drawn.
+7. If batch is confounded with condition, say so and stop rather than correcting: no method recovers an effect that was never separable from the batch.
+8. Save intermediates; long workflows fail partway. Record QC thresholds, parameters and the backend.
 
 ## Additional Resources
 
