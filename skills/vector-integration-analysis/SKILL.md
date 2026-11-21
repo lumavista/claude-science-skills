@@ -58,7 +58,8 @@ end-joining breakpoints scatter. A disagreement fails the
 
 Five scripts run in a fixed order, and the scripts carry the analysis: every
 number, flag, tier and site in the report is a script output. A sixth,
-`make_figures.py`, draws the report's figures from what the five wrote.
+`make_figures.py`, draws the report's figures from what the five wrote, and a
+seventh, `build_report.py`, assembles the report from all of it.
 
 ```
 construct_identity  ->  classify_junctions (per mapping)  ->  host_reference
@@ -68,13 +69,16 @@ construct_identity  ->  classify_junctions (per mapping)  ->  host_reference
                                    reconcile_sites  <--------------+
                                    (the authoritative site result)
                                           |
-                                     make_figures  ->  report, filled from
-                                     (the figures)     assets/report_template.md
+                                     make_figures  ->  build_report
+                                     (the figures)     (the authoritative report:
+                                                        report.html, figures inline)
 ```
 
-The report is the last stage's output, not a free composition: it is the
-template filled with the script outputs and the figures `make_figures.py`
-drew. No figure is drawn by hand, and no section structure is invented.
+The report is the last script's output, not a free composition:
+`build_report.py` fills `assets/report_template.md` with the stage outputs and
+the figures `make_figures.py` drew. You write only the interpretive prose. No
+figure is drawn by hand, no number is retyped, and no section structure is
+invented. See "Deliverable" at the end of the workflow.
 
 **One file states the run.** `run.json`, the run manifest, holds the facts you
 supply once at Stage 0. Every stage takes `--run run.json`, reads what it needs
@@ -387,24 +391,15 @@ notes — including any shortfall, with what you think absorbs it.
 
 Rules, parameters and the argument for each: `references/attribution.md`.
 
-### Stage 5 — report what the reconciliation produced
-
-Report `called_sites.tsv` and the site summary as they stand. The evidence
-tiers are already in them: **certain** (vector side in construct-unique
-sequence), **inferred** (vector-end or copy-ceiling, with the reason recorded
-per locus), **unresolved** (candidates named, attributed to nobody). Do not
-re-tier, re-argue or redistribute the unresolved loci — they are the validation
-priorities, and one junction PCR settles each. Quote the bounded site range and
-the unresolved count together; never a single undifferentiated number.
-
-**Draw the figures with the script, then fill the template.** Never draw,
-re-plot or describe a figure by hand: every figure in the report comes from
-`make_figures.py`, so it is the same for any model and any dataset.
+### Stage 5 — draw the figures
 
 ```bash
-cp assets/report_template.md report.md     # fill the text from the outputs
-python scripts/make_figures.py --run run.json --fill report.md
+python scripts/make_figures.py --run run.json
 ```
+
+Never draw, re-plot or describe a figure by hand: every figure in the report
+comes from `make_figures.py`, so it is the same for any model and any dataset.
+It writes the SVGs and `figures/figures.json`, which `build_report.py` reads.
 
 With `--run`, every input comes from the stages' records: the identity map, the
 depth files, `accounting.json`, the called sites, the site summary, and the
@@ -421,21 +416,85 @@ the standard outputs, for any genome and any number of constructs:
 | copy number: bars per construct per sample, one per copy-number JSON (pass two `--copy-number` runs, e.g. two trim policies, to set them side by side), with per-block spread and the shared-block closure deficit | `[[FIG:copy_number]]` | copy_number.py `--json` |
 | architecture: site floor, attributed, ceiling and unresolved per construct, and the copies per site that implies | `[[FIG:architecture]]` | site_summary.json |
 
-`--fill` replaces each placeholder with an image link and caption. When a
-figure's input is missing, the script skips that figure, records why in
-`figures/figures.json` and puts a visible "not generated" note in its slot:
-supply the input and rerun rather than substituting a figure of your own.
-An input that exists but cannot be parsed, or an unreadable `--run` manifest,
-is exit status 2, as in every other stage.
+When a figure's input is missing, the script skips that figure and records why
+in `figures/figures.json`; the report then shows a visible "not generated" note
+in its slot. Supply the input and rerun rather than substituting a figure of
+your own. An input that exists but cannot be parsed, or an unreadable `--run`
+manifest, is exit status 2, as in every other stage. (`--fill REPORT.md` still
+places Markdown image links for a hand-filled template; the report itself comes
+from Stage 6.)
+
+**Done when** the exit status is 0 and `figures/figures.json` lists the coverage
+tracks and the genome overview, or names what each missing one lacks.
+
+### Stage 6 — build the report
+
+```bash
+cp assets/report_template.md report.md     # write the prose into it
+python scripts/build_report.py --run run.json --report report.md --strict
+```
+
+**This script is the report. Deliver its output; do not assemble your own.**
+It fills every placeholder in the template from the stage outputs:
+
+- `[[FIG:...]]`: the skill's figures, the SVGs embedded exactly as
+  `make_figures.py` drew them
+- `[[TABLE:...]]`: the called-site table, copy numbers, site bounds, site
+  accounting, the identity blocks, the fingerprint, every non-passing check
+  and every caveat
+- `[[VAL:...]]`: the bounded site range with the unresolved count, the
+  closure deficit, the host, the modality and the tier counts
+
+`<construct A>`, `<construct B>`, ... inside a placeholder are resolved by the
+script: A is the primary mapping, the rest follow the identity map.
+`--list-placeholders` prints every id.
+
+**Your part is the prose, and only the prose.** Replace the `<...>` text in
+`report.md` with interpretation and leave every `[[...]]` placeholder where it
+is. The evidence tiers are already in the tables: **certain** (vector side in
+construct-unique sequence), **inferred** (vector-end or copy-ceiling, with the
+reason recorded per locus), **unresolved** (candidates named, attributed to
+nobody). Do not re-tier, re-argue or redistribute the unresolved loci. They
+are the validation priorities, and one junction PCR settles each.
+
+It writes, beside the manifest: `report.html`, `report_filled.md` (the same
+report linking the SVG files), `report.json` (what was embedded, and the
+checks), and `report.docx` only when an SVG rasteriser is installed. Its checks
+are under "Checks" below. `prose_unfilled` lists any `<...>` template text
+still waiting for prose.
 
 Structure in `assets/report_template.md`, which ends with the validation
 priorities (ddPCR copy number, junction PCR, long reads); bench follow-up in
 `references/validation.md`.
 
-**Done when** every section of the template is filled or deleted, every
-`[[FIG:...]]` placeholder is filled by `make_figures.py --fill`, the site
-range and the unresolved count appear together, and every caveat and every
-accepted check from the stage outputs is in the report.
+**Done when** the exit status is 0, `prose_unfilled` is gone or names only
+sections you deleted on purpose, and every accepted check is explained in the
+prose under "Checks and caveats carried forward".
+
+## Deliverable
+
+**The deliverable is `report.html`, written by `build_report.py`.** It is one
+self-contained file: the skill's SVGs inline, no external file, no script, no
+dependency. It opens in any browser and prints to PDF from there, including in
+a locked-down environment. It contains the skill's per-construct coverage
+tracks and the genome integration-site map, beside the called-site table and
+the bounded site range. `report.docx` is an optional extra, built only by
+rasterising those same SVGs. When no rasteriser is present the script skips
+the docx, says why, and the HTML stands alone.
+
+Report that file: give the path to `report.html` (and to `report.docx` if one
+was built), and quote the headline from it. Do not assemble a report of your
+own.
+
+- **Do not redraw figures in matplotlib**, or in anything else.
+- **Do not substitute self-made charts for the skill's.** If a figure is
+  missing, its slot says which input it lacks: supply that input and rerun
+  `make_figures.py`, then `build_report.py`. An image the skill did not draw is
+  removed from the report and fails `foreign_figure`.
+- **Do not invent a report structure.** Fill the template. Do not build a
+  docx, PDF or slide deck by hand from the outputs. If a format beyond the HTML
+  is needed, print the HTML to PDF, or install a rasteriser and rerun for the
+  docx.
 
 ## Checks
 
@@ -491,6 +550,19 @@ stderr carries the specifics; this is the standing meaning.
 | `ceiling_divisor` | *(warns only)* the divisor was set to 1 where Stage 3 measured arrays, so the ceiling is nominal | dropping the flag so the measured value applies, or keeping 1 and saying so |
 | `site_accounting` | *(warns only)* a construct's called sites do not account for the copy number measured for it | the shortfall's three candidates above: missing flanks, an extrachromosomal pool, or more copies per site than `--min-copies-per-site` assumes |
 | `sites_called` | *(warns only)* no locus was called | the retention parameters, or the input |
+
+**Stage 6 — `build_report.py`**
+
+| Check | Failing means | Resolve by |
+|---|---|---|
+| `report_inputs` | the identity map, copy-number JSON, called sites or site summary is missing, so the report would carry no stage result | running the stages with `--run`, or naming the files |
+| `upstream_checks` | a stage carries a failing, unaccepted check, so its output must not be reported as it stands. Cannot be accepted here | resolving it, or accepting it at that stage, and rerunning |
+| `figures_drawn` | no `figures.json`: `make_figures.py` has not run. It warns when it ran but skipped a figure | running `make_figures.py --run run.json` first, or supplying the skipped figure's input |
+| `figure_provenance` | a listed figure is missing or is not the SVG `make_figures.py` wrote, so it was not embedded. Cannot be accepted | rerunning `make_figures.py` |
+| `foreign_figure` | the prose carried an image the skill did not draw. It was removed. Cannot be accepted | deleting it from `report.md`. Figures come only from `make_figures.py` |
+| `figures_placed` | *(warns only)* a figure had no placeholder, so it was appended in an appendix | putting its `[[FIG:...]]` back where it belongs |
+| `placeholders` | *(warns only)* a placeholder could not be filled; its slot says why | supplying the missing input, or deleting a section that does not apply |
+| `prose_unfilled` | *(warns only)* `<...>` template text is still waiting for prose | writing it |
 
 ## Rules and failure modes
 
@@ -548,6 +620,8 @@ stderr carries the specifics; this is the standing meaning.
 - `scope.md` — the data turns out to be polyclonal clonal-tracking
 
 `assets/run.example.json` is the run manifest template, with every field
-documented in place. Scripts need Python 3.8+ and no third-party packages.
+documented in place. Scripts need Python 3.8+ and no third-party packages
+(`build_report.py` uses cairosvg or `rsvg-convert` for the optional docx when
+one is installed).
 `tests/run_tests.sh` exercises every path against synthetic fixtures, and runs
 `tests/test_host.sh` (the host stage, offline) as its last step.

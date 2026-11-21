@@ -1,34 +1,46 @@
 <!--
 HOW THIS REPORT IS BUILT. Fill this template; do not invent a structure.
 
-* Every number comes from a script output: identity.json / identity_map.md
-  (Stage 1), the classify_junctions.py tables (Stage 2), the copy_number.py
-  JSON and Markdown (Stage 3), and called_sites.tsv + site_summary.json from
-  reconcile_sites.py (Stage 4). Quote them; do not re-derive them.
-* Every figure comes from scripts/make_figures.py. Do not draw, describe-as-
-  drawn or substitute any figure by hand. Each [[FIG:<id>]] placeholder below
-  is replaced by the script:
+* scripts/build_report.py builds the report from this template, and is the
+  only thing that does:
 
-      python scripts/make_figures.py --run run.json --fill report.md
+      cp assets/report_template.md report.md      # write the prose into it
+      python scripts/make_figures.py --run run.json
+      python scripts/build_report.py --run run.json --report report.md --strict
 
-  Placeholder ids: [[FIG:coverage_<construct>]] (every sample's track for that
-  construct; [[FIG:coverage_<sample>_<construct>]] for one), [[FIG:genome_overview]],
-  [[FIG:copy_number]], [[FIG:architecture]]. Replace <construct> with the
-  construct's name exactly as in identity.json. A figure that could not be drawn
-  is replaced by a visible "not generated" note naming the missing input: leave
-  that note in, or supply the input and rerun.
+  It writes report.html (the deliverable: self-contained, figures inline),
+  report_filled.md, and report.docx only when an SVG rasteriser is present.
+* You write ONLY the interpretive prose: replace the <...> text, keep the
+  [[...]] placeholders exactly where they are. The script fills them:
+    [[FIG:<id>]]    the skill's figures from make_figures.py, embedded as drawn
+    [[TABLE:<id>]]  tables from the stage outputs (called sites, copy numbers,
+                    site bounds, accounting, checks, caveats, ...)
+    [[VAL:<id>]]    numbers and facts (site range, unresolved count, closure
+                    deficit, host, modality, ...)
+  Never retype a number a placeholder carries, never draw or paste in a
+  figure (an image the skill did not draw is removed and fails the
+  foreign_figure check), and never move a table into prose.
+  `build_report.py --list-placeholders` lists every id.
+* <construct A>, <construct B>, ... inside a placeholder are resolved by the
+  script: A is the primary mapping, the rest follow identity.json's order. You
+  may also write a construct's name, e.g. [[FIG:coverage_pAlpha]]. A slot whose
+  input is missing gets a visible "not generated" note naming what is missing:
+  leave it, or supply the input and rerun.
 * Keep every section. One per construct for the per-construct results
-  (sections 3-4: repeat for a third construct, delete section 3 for one). A
-  section that does not apply says so in one line rather than disappearing.
+  (sections 3-4: repeat for a third construct with <construct C>, delete
+  section 3 for one). A section that does not apply says so in one line rather
+  than disappearing.
 -->
 
 # Vector integration analysis — <line name>
 
 **Project:** <project ID, pipeline and version>
-**Samples:** <names and what distinguishes them>
-**Host:** <cell line background; organism and assembly (accession) from stages.host, and how they were decided: declared / hint / inferred; measured ploidy>
-**Delivery modality:** <declared, and whether the junction fingerprint agrees>
+**Samples:** [[VAL:samples]]. <what distinguishes them>
+**Host:** [[VAL:host]]; ploidy [[VAL:ploidy]]. <cell line background, if more is known>
+**Delivery modality:** [[VAL:modality]]. <whether the paperwork agrees>
 **Constructs, in order of delivery:**
+
+[[TABLE:constructs]]
 
 1. <name, backbone, size, delivery route, defined ends, cargo, selection>
 2. <...>
@@ -38,79 +50,87 @@ HOW THIS REPORT IS BUILT. Fill this template; do not invent a structure.
 
 ## Summary
 
-| | Construct A | Construct B |
+[[TABLE:summary]]
+
+| | [[VAL:name:<construct A>]] | [[VAL:name:<construct B>]] |
 |---|---|---|
-| Integration sites | | |
-| Both flanks recovered | | |
-| Copies per haploid genome, <sample1> | | |
-| Copies per haploid genome, <sample2> | | |
-| Copies per site | | |
-| Architecture | | |
-| Backbone carryover | | |
-| Cassette integrity | | |
-| Effect of <the variable distinguishing the samples> | | |
+| Architecture | <...> | <...> |
+| Backbone carryover | <...> | <...> |
+| Cassette integrity | <...> | <...> |
+| Effect of <the variable distinguishing the samples> | <...> | <...> |
+
+**Site result.** [[VAL:site_range]].
 
 **Headline result.** <two or three sentences>
 
-**How the site count is derived.** <N> junctions, minus <N> cross-mapping
-through shared sequence and <N> other flagged artefacts, leaves <N> for this
-construct; <N> of those are the paired flanks of one site; giving **<N> distinct
-loci**. State any alternative reading and the count it would give.
+**How the site count is derived.** [[VAL:site_derivation]]. <State any
+alternative reading and the count it would give.>
 
-**How copy number was obtained.** Measured from unique-block depth / inferred
-from boundary junctions / reported as an upper bound. Say which, and if it is
-not the first, say what was requested to make it so. Name the baseline
-(genome-median depth or read count) and the shared-block closure. If the stacked
-solve went negative, say so, because it means the additive model was incomplete.
+**How copy number was obtained.** [[VAL:copy_number_route]]. Shared-block
+closure: [[VAL:deficit]]. <If the route is not "measured", say what was
+requested to make it so. If the stacked solve went negative, say what that
+means for this line.>
 
-**Main caveat.** <N> loci are proven by sequence; <N> are assigned by argument
-(section 5) and should be confirmed before being relied on.
+**Main caveat.** Loci proven by sequence: [[VAL:n_certain]]; assigned by
+argument (section 5): [[VAL:n_inferred]]; unresolved: [[VAL:n_unresolved]].
+Confirm the last two before relying on them.
 
-**Checks and caveats carried forward.** Every caveat from the stage reports,
-and every check accepted with `--accept`, with what was investigated and why it
-does not invalidate the result.
+**Checks and caveats carried forward.**
+
+[[TABLE:checks]]
+
+[[TABLE:caveats]]
+
+<For every check accepted with `--accept`: what was investigated and why it
+does not invalidate the result.>
 
 ## 1. What was delivered, and how
 
-The modality, the evidence for it from the junction fingerprint, and what
+[[TABLE:fingerprint]]
+
+<The modality, the evidence for it from the junction fingerprint, and what
 follows arithmetically. If the fingerprint disagreed with the paperwork, this
-section is where that is resolved — not a footnote.
+section is where that is resolved — not a footnote.>
 
 ## 2. The central problem: which construct did a read come from?
 
-Mechanism, what it did to the delivered data, how it was resolved. Include the
-shared percentage, the construct-unique coordinate blocks, and the predicted
-artefact boundaries. One worked example of an artefactual junction is worth
-more than a paragraph of explanation.
+[[TABLE:identity]]
+
+<Mechanism, what it did to the delivered data, how it was resolved. One worked
+example of an artefactual junction is worth more than a paragraph of
+explanation.>
 
 Omit this section only if the line carries a single construct.
 
-## 3. <Construct B> — <result>
+## 3. [[VAL:name:<construct B>]] — <result>
 
-Same structure as section 4, scaled to what this construct carries: its sites
-(locus table from called_sites.tsv), its copy number, and what its coverage
-track shows.
+<Same structure as section 4, scaled to what this construct carries.>
 
 [[FIG:coverage_<construct B>]]
 
-Read the track before quoting the copy number: the unique blocks should sit
+**Copy number.** [[VAL:copy_number:<construct B>]].
+
+[[TABLE:called_sites:<construct B>]]
+
+<Read the track before quoting the copy number: the unique blocks should sit
 flat at one level, the shared blocks at the sum of their carriers, and the
 trimmed edges should be the only places the depth tapers. A step inside a
 block, or a unique block at a different level from its sibling, is a deletion,
-a rearrangement or a mis-specified reference, and belongs in section 7.
+a rearrangement or a mis-specified reference, and belongs in section 7.>
 
-## 4. <Construct A> — <N> sites
+## 4. [[VAL:name:<construct A>]] — [[VAL:sites:<construct A>]] sites
 
 [[FIG:coverage_<construct A>]]
 
-State the unique-block copy number shown on the track, the number of unique
-bases it rests on, and whether the per-block estimates agree.
+**Copy number.** [[VAL:copy_number:<construct A>]].
 
-Locus table: `#`, locus, vector position, target-site footprint, evidence tier
-(certain / inferred), support per sample, and the host context from
-called_sites.tsv: `host_region` (exonic / intronic / intergenic), `host_gene`, or
-`nearest_gene` with its distance and side for an intergenic site. If there was
-no host annotation, leave the host-context columns out and say why.
+<Whether the track bears that number out, and whether the per-block estimates
+agree.>
+
+[[TABLE:called_sites:<construct A>]]
+
+<The host-context columns come from called_sites.tsv when the host stage
+annotated it; if they are absent, say why.>
 
 ### Are these junctions real?
 
@@ -128,47 +148,55 @@ applies.
 
 [[FIG:genome_overview]]
 
-Where the loci sit, by attributed construct and confidence. Name any contig
-carrying more than one locus, and any locus whose position (centromeric,
-subtelomeric, near a gene of known consequence) matters for section 9.
+Contigs with more than one called locus: [[VAL:multi_locus_contigs]].
+<Any locus whose position (centromeric, subtelomeric, near a gene of known
+consequence) matters for section 9.>
 
-**Certain (<N> loci).** Vector side in sequence unique to one construct.
+[[TABLE:called_sites]]
 
-**Inferred (<N> loci).** State the argument as numbered steps, give its margin,
-and say what would overturn it. Then a per-locus table of which evidence
-strands apply — position at a defined vector end, footprint matching the
-modality, cross-sample scaling — and name the loci resting on a single strand.
-Those are the validation priorities.
+**Certain: [[VAL:n_certain]].** Vector side in sequence unique to one
+construct.
 
-## 6. Is <N> the whole picture?
+**Inferred: [[VAL:n_inferred]].** <State the argument as numbered steps,
+give its margin, and say what would overturn it. Name the loci resting on a
+single evidence strand — position at a defined vector end, footprint matching
+the modality, cross-sample scaling. Those are the validation priorities.>
+
+**Unresolved: [[VAL:n_unresolved]].** Attributed to no construct; the
+candidates are named.
+
+[[TABLE:unresolved]]
+
+## 6. Is the site range the whole picture?
 
 ### Copy number
 
 [[FIG:copy_number]]
 
-Copies per haploid genome per construct and sample, from copy_number.py. Say
-which route produced each number (measured from unique-block depth, boundary
-estimator, or upper bound), the baseline, and the per-block spread. Quote the
-shared-block closure shown under the figure: near zero means the additive model
+[[TABLE:copy_number]]
+
+Shared-block closure: [[VAL:deficit]]. <Near zero means the additive model
 holds; well below zero means shared sequence is under-represented (typically
 backbone loss in concatemers), and the stacked solve is a diagnostic only. If
-two trim policies are shown side by side, say whether they agree.
+two trim policies are shown side by side, say whether they agree.>
 
 ### Copies per site and the site-count bound
 
 [[FIG:architecture]]
 
-Per construct: the floor (certain + vector-end loci), the attributed count, the
-copy-number ceiling and the unresolved candidates, from reconcile_sites.py, and
-the copies per site that range implies. Quote the bounded range and the
-unresolved count together.
+[[TABLE:site_bounds]]
+
+The ceiling divides by [[VAL:ceiling_divisor]]. Site result:
+[[VAL:site_range]]. <What copies per site that range implies, and what the
+upper bound rests on.>
 
 ### Reconciliation
 
-The reconciliation: total copies, copies per site, implied sites, loci
-detected, and whether they agree. Calibration against a locus of known
-structure. Flank detection rate and why it is below 100%. If there is a
-shortfall, say what would absorb it and how to test that.
+[[TABLE:site_accounting]]
+
+Flank recovery: [[VAL:flank_detection]]. <Calibration against a locus of known
+structure. Why flank detection is below 100%. If there is a shortfall, what
+would absorb it and how to test that.>
 
 ## 7. Integrity of what integrated
 
@@ -224,3 +252,7 @@ Always consider, and say why any is omitted:
 
 Name the loci resting on a single evidence strand (section 5) first: they are
 the cheapest claims to overturn.
+
+Junction-PCR priorities from called_sites.tsv:
+
+[[TABLE:validation_loci]]
