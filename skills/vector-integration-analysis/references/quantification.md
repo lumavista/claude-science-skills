@@ -18,6 +18,10 @@ Worked examples use round illustrative numbers, not figures from any dataset.
 9. Cross-sample scaling as a vector-of-origin discriminator
 10. Assumptions, and what breaks each one
 
+Attribution of a site to a construct — the priority order, the copy-number
+ceiling and why it is hard — is in `references/attribution.md`. The called-site
+table comes from `reconcile_sites.py`, not from arithmetic done by hand.
+
 ---
 
 ## 1. Genome coverage and units
@@ -80,10 +84,38 @@ up (see below).
 
 Copies per haploid genome: divide each `P_j` by the baseline (section 1).
 
-A construct with no usable unique block, because it has no depth file or too
-little unique sequence survives trimming, falls back to the stacked solve below
-for that construct only. The report flags it, because the value then inherits
-any non-additivity of the shared blocks.
+A construct with no usable unique block, because it has no depth file or no
+unique sequence survives trimming, falls back to the stacked solve below for
+that construct only. The report flags it, because the value then inherits any
+non-additivity of the shared blocks.
+
+### Every unique block counts, and their spread is reported
+
+A construct's unique sequence is usually several separate blocks. The reported
+copy number is their **bp-weighted mean**, and the report also prints **each
+block's own estimate** beside it, with the minimum, maximum, relative range and
+bp-weighted CV.
+
+Two rules here, both of which exist because their absence produced a wrong
+answer that looked clean:
+
+- **No block is dropped on size.** Every block with at least one base left
+  after trimming is used, bp-weighted. A small block then counts for little
+  rather than for nothing, which is the honest version of the same preference.
+  The retired `min_class_bp` threshold silently excluded a construct whose
+  whole unique class was small, and that construct then fell through to the
+  flagged solve — a worse estimate, reached without saying so. `min_class_bp`
+  is still accepted and ignored, with a deprecation warning.
+- **Disagreement between blocks is flagged, not averaged away.** When the
+  per-block estimates span more than `--max-unique-spread` (default 0.25) of
+  their mean, the report raises a caveat naming the construct and listing the
+  blocks. A wide spread means part of the construct is genuinely at a different
+  copy number — a partially deleted cassette, truncated arrays — or that one
+  block's depth is biased by boundary taper or host homology. Either way the
+  mean alone is misleading.
+
+A construct estimated from little sequence, or from blocks that disagree, is a
+**flagged** answer, never a silent one. Report the range, not just the mean.
 
 ### The cross-check: the stacked solve, unconstrained
 
@@ -122,29 +154,35 @@ A closure **surplus** (shared blocks deeper than predicted) points the other
 way: host-homologous sequence in the shared region or an unlisted construct
 (see the residual candidates below).
 
-### Why block edges must be trimmed, and the trim-mode trade-off
+### Why block edges must be trimmed, and where the trim applies
 
 Within roughly one read length of a membership-class boundary, a read cannot
 lie wholly inside the block, so cross-mapping tapers off and the observed depth
 is neither the shared nor the unique value. Averaging across untrimmed blocks
-is the reason naive decomposition comes out several-fold high. The script trims
-`edge_trim` bases (default `read_length`, `--edge-trim`) and drops classes with
-too few usable bases (`--min-class-bp`).
+is the reason naive decomposition comes out several-fold high. At a linear
+reference terminus, coverage falls off for every class alike.
 
-Where the trim applies is set by `--trim-mode` or `trim_mode` in the config:
+The default policy, `trim_boundaries`, trims `--trim-boundaries` bases (default
+`read_length`) **inward from a block end that abuts either a different
+membership class or a contig terminus** — the two places where the depth is not
+the block's own value. An end that abuts a block of the **same** membership is
+not trimmed: depth runs straight through such a join, and trimming it throws
+away good bases for nothing. On a circular reference there are no termini, so
+the first and last blocks are neighbours and the wrap-around join is treated
+like any other.
 
-| Mode | Trims | Gains | Costs |
-|---|---|---|---|
-| `block-edge` (default) | `edge_trim` from both ends of **every** block | removes the boundary taper, so unique and shared depths are clean | discards a construct's small unique blocks outright. A fragmented unique set can leave a low-copy construct resting on a few hundred bp, or on none |
-| `contig-end` | only within `edge_trim` of the linear reference termini | keeps every interior unique base, so small unique blocks still count | leaves the taper in. Unique-block depth is biased up and shared-block depth down, by roughly `read_length ÷ block length` (small for kb-scale blocks, large for blocks near read length) |
+This replaces the earlier block-edge/contig-end dichotomy, which forced a
+choice between removing the taper and keeping small blocks. There is no
+trade-off to make: the taper is removed where it exists, and no block is
+dropped for being small (see above). The old names still work —
+`--edge-trim` is a deprecated alias of `--trim-boundaries`, and `--trim-mode`
+is accepted with a warning, `block-edge` mapping onto the current policy and
+`contig-end` kept as a legacy policy that trims only the reference termini and
+so leaves the taper in.
 
-`block-edge` stays the default for backward compatibility. Whichever mode is
-used, the script warns, naming the construct and the bp, when a construct's
-retained unique sequence falls below 500 bp (`--min-unique-bp`), so a
-low-confidence estimate is visible. When that warning fires, rerun with
-`contig-end` and compare. If the two agree, the estimate is robust to the
-choice. If they disagree, the unique blocks are too short to give a clean
-number and the result should be reported with that uncertainty.
+Whatever the policy, the script warns, naming the construct and the bp, when a
+construct's retained unique sequence falls below 500 bp (`--min-unique-bp`), so
+a low-confidence estimate is visible rather than implied.
 
 This also explains why nominal and effective shared fractions differ: shared
 blocks shorter than a read contribute nothing to cross-mapping at all.
@@ -308,7 +346,10 @@ A detection rate well below 100% is normal and needs no exotic explanation:
 - a junction carrying a filler longer than a read can span is never called.
 
 **The reconciliation is the result.** Compare `sites` against the number of
-loci actually detected. Agreement within ~25% means the detected loci account
+loci actually detected — the called-site count from `reconcile_sites.py`, which
+has collapsed each junction's duplicate reports across mappings. Counting the
+per-mapping loci tables instead double-counts every shared-sequence site and
+turns a clean reconciliation into a spurious excess. Agreement within ~25% means the detected loci account
 for the DNA present and there is no large undetected reservoir.
 
 - **Shortfall** (more DNA than the loci can hold): sites are missing, or part
@@ -365,6 +406,21 @@ CI    = ratio × exp(± 1.96 × √(1/support₁ + 1/support₂))
 intervals are wide and overlap. Use it as one strand of evidence, recorded per
 locus, never alone.
 
+**The copy-number ceiling outranks it.** `reconcile_sites.py` does not compute
+a scaling signal at any point in attribution, so none can override the
+ceiling. The priority order is
+
+```
+unique  >  vector-end  >  copy-ceiling  >  unresolved
+```
+
+and a construct measured at N copies per haploid cannot be assigned more
+copy-ceiling sites than `ceil(N × ploidy ÷ min_copies_per_site)`, however the
+support ratios fall. If you use a scaling argument in a write-up at all, it may
+only break ties among constructs that are **all** admissible under the ceiling;
+it may never place a locus on a construct whose cap is already full. Full
+argument: `references/attribution.md`.
+
 ---
 
 ## 10. Assumptions, and what breaks each one
@@ -380,6 +436,7 @@ locus, never alone.
 | Ploidy known | aneuploid or drifting line | calibration off by the ploidy error |
 | Genome coverage comparable between samples | different library depth | cross-sample ratios meaningless without `norm` |
 | Arrays are tandem | inverted or interspersed architecture | the internal:flank ratio still estimates copies per site, but `n` is not a tandem repeat number |
+| Each junction is reported once | the same site is counted from two mapping runs | site count roughly doubles; reconciliation shows a spurious excess |
 | One flank per site is missing at random | systematic — e.g. the vector end always lands in repeats | detection rate misestimated; site count biased |
 
 When an assumption is untestable from the data, say so in the report rather

@@ -127,6 +127,9 @@ the mapping FASTA — so declare it:
 --construct-alias pFOO=pFOO_linearized      # CONSTRUCT=TABLENAME
 ```
 
+This one has no manifest field: it describes a particular table, not the run,
+so pass it on the Stage 2 command line for the mapping that needs it.
+
 A limited prefix match is attempted as a fallback for names of five characters
 or more, and always warns. Pass `--no-prefix-match` to require exact names or
 explicit aliases, which is the right setting for an automated pipeline.
@@ -134,6 +137,18 @@ explicit aliases, which is the right setting for an automated pipeline.
 If no reference name in a table matches any construct, the script **stops**
 rather than silently classifying every junction as host-to-host. That failure
 mode is silent and catastrophic, so it is made fatal.
+
+### Which host genome?
+
+Which organism and build the host contigs belong to is a separate question,
+settled by `host_reference.py` (Stage 2b). It matches each host contig name
+against NCBI's assembly report under every convention NCBI records for that
+sequence: RefSeq (`NC_000001.11`), GenBank (`CM000663.2`), UCSC (`chr1`), the
+submitter's sequence name, and the bare molecule (`1`, `chrM`/`MT`). It then
+writes the host `.fai` and the gene table in whichever convention the junction
+tables use, so annotation and the genome overview line up with
+`called_sites.tsv` without renaming. Decoy, EBV, HLA and phiX contigs (common
+in GRCh38 analysis sets) are recognised and only warn.
 
 ## Unmapped partners
 
@@ -150,15 +165,22 @@ scripts.
 `--vector-ends` takes the coordinates of the delivered molecule's defined ends
 **in that construct's own numbering**:
 
-- linearized plasmid: the restriction site coordinates (for a reference built
-  by cutting a circular plasmid, the first and last few bases);
+- linearized plasmid: the restriction site coordinates. For a reference built
+  by cutting the plasmid at that site, those are the first and last bases, so
+  `1,<length>`. For a reference still numbered as the uncut circular plasmid,
+  it is the cut coordinate itself — the two bases either side of the cut are
+  the delivered molecule's ends, so give that one coordinate (or both of
+  `c,c+1`); the reference is then also `--circular` in Stage 1;
 - provirus: the LTR termini;
 - transposon: the ITR termini;
 - circular or supercoiled delivery with no defined end: omit it.
 
 Its meaning depends on `--modality` — see `modalities.md`. For fixed-end
-modalities, supplying it is effectively mandatory: without it every real
-junction is flagged as a reference-edge artefact.
+modalities it is mandatory in practice: without it every real junction is
+flagged as a reference-edge artefact, so `classify_junctions.py` fails its
+`vector_ends` check and, under `--strict`, stops. Declare the ends per
+construct in the run manifest (`assets/run.example.json`) so every stage uses
+the same values.
 
 ## Support thresholds
 

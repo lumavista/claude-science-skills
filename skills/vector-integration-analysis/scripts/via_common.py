@@ -60,6 +60,68 @@ def norm(s: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# Delivery modalities -- the one table every stage reads
+# --------------------------------------------------------------------------
+#
+# `footprint` is the expected value of
+#       delta = host_pos(right flank) - host_pos(left flank) - 1
+# A target-site duplication of d bp makes the two flanks overlap in reference
+# coordinates, so delta = -d. A target-site deletion of m bp gives delta = +m.
+# A clean join gives 0.
+
+MODALITIES: Dict[str, Dict] = {
+    "nhej": {
+        "label": "end-joining (linearized plasmid, naked DNA, minicircle)",
+        "fixed_ends": False,
+        "concatemers": True,
+        "footprint": None,            # variable: small deletions are the norm
+        "footprint_range": (-3, 40),
+        "copies_per_site": "variable (1 to tens; tandem arrays are the rule)",
+    },
+    "integrase": {
+        "label": "integrase-mediated (lentivirus, gammaretrovirus)",
+        "fixed_ends": True,
+        "concatemers": False,
+        "footprint": -5,              # HIV-1; MLV is -4
+        "footprint_range": (-6, -3),
+        "copies_per_site": "1",
+    },
+    "transposon-pb": {
+        "label": "PiggyBac transposase",
+        "fixed_ends": True,
+        "concatemers": False,
+        "footprint": -4,              # TTAA duplicated
+        "footprint_range": (-4, -4),
+        "copies_per_site": "1",
+    },
+    "transposon-sb": {
+        "label": "Sleeping Beauty transposase",
+        "fixed_ends": True,
+        "concatemers": False,
+        "footprint": -2,              # TA duplicated
+        "footprint_range": (-3, -1),
+        "copies_per_site": "1",
+    },
+    "hdr": {
+        "label": "homology-directed targeted integration (knock-in)",
+        "fixed_ends": True,
+        "concatemers": True,          # concatemers at the target locus happen
+        "footprint": 0,
+        "footprint_range": (-2, 2),
+        "copies_per_site": "1 per targeted allele, but check for concatemers",
+    },
+    "auto": {
+        "label": "undeclared -- inferred from the data",
+        "fixed_ends": None,
+        "concatemers": None,
+        "footprint": None,
+        "footprint_range": None,
+        "copies_per_site": "unknown until the modality is settled",
+    },
+}
+
+
+# --------------------------------------------------------------------------
 # Clip conventions
 # --------------------------------------------------------------------------
 #
@@ -670,6 +732,91 @@ def _orient(recs: List[Junction], matcher: NameMatcher,
         if k not in best or r.support > best[k].support:
             best[k] = r
     return sorted(best.values(), key=lambda r: -r.support)
+
+
+# --------------------------------------------------------------------------
+# Loci tables -- one schema, written by Stage 2 and read by Stage 4
+# --------------------------------------------------------------------------
+
+#: fixed leading columns of a loci table; the per-sample columns follow
+LOCI_COLUMNS = ["contig", "start", "end", "flanks", "footprint", "vector_pos",
+                "region", "membership", "feature", "evidence_tier"]
+
+
+def loci_header(samples: Sequence[str]) -> List[str]:
+    """Column names for a loci table. `samples[0]` is the reference sample;
+    every other sample also carries its support ratio against it."""
+    hdr = list(LOCI_COLUMNS) + ["support_" + samples[0]]
+    for s in samples[1:]:
+        hdr += ["support_" + s, "ratio_" + s, "lo_" + s, "hi_" + s]
+    return hdr
+
+
+def write_loci(path: str, samples: Sequence[str],
+               rows: Iterable[Dict[str, object]]) -> None:
+    """Write a loci table. Each row is keyed by `loci_header(samples)`; a
+    missing or None value is written as an empty cell."""
+    hdr = loci_header(samples)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\t".join(hdr) + "\n")
+        for row in rows:
+            fh.write("\t".join("" if row.get(c) is None else str(row[c])
+                               for c in hdr) + "\n")
+
+
+def _opt_int(v: Optional[str]) -> Optional[int]:
+    try:
+        return int(float(v))                          # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def read_loci(path: str, mapping: str) -> Tuple[List[Dict], List[str]]:
+    """Read one loci table written by `write_loci` (classify_junctions.py
+    --out-loci).
+
+    Returns its loci as per-mapping *entries*, plus the sample names taken
+    from the `support_<sample>` columns.
+    """
+    with open(path, encoding="utf-8") as fh:
+        hdr = fh.readline().rstrip("\n").split("\t")
+        need = {"contig", "start", "end", "vector_pos", "membership"}
+        missing = need - set(hdr)
+        if missing:
+            raise ValueError(
+                "%s: not a classify_junctions loci table (no %s column). Pass "
+                "the file written by --out-loci."
+                % (path, ", ".join(sorted(missing))))
+        samples = [h[len("support_"):] for h in hdr if h.startswith("support_")]
+        if not samples:
+            raise ValueError(
+                "%s: no support_<sample> column, so retention by sample count "
+                "is impossible. Re-run classify_junctions.py with --out-loci."
+                % path)
+        entries: List[Dict] = []
+        for n, line in enumerate(fh, start=2):
+            f = line.rstrip("\n").split("\t")
+            if len(f) != len(hdr):
+                continue
+            d = dict(zip(hdr, f))
+            start, end = _opt_int(d["start"]), _opt_int(d["end"])
+            if start is None or end is None:
+                continue
+            entries.append({
+                "mapping": mapping, "row": n, "contig": d["contig"],
+                "start": min(start, end), "end": max(start, end),
+                "flanks": _opt_int(d.get("flanks")) or 1,
+                "footprint": _opt_int(d.get("footprint")),
+                "vector_pos": _opt_int(d.get("vector_pos")),
+                "region": d.get("region", ""),
+                "membership": frozenset(
+                    m.strip() for m in d.get("membership", "").split("+")
+                    if m.strip()),
+                "support": {s: (_opt_int(d.get("support_" + s)) or 0)
+                            for s in samples},
+            })
+    return entries, samples
+
 
 
 # --------------------------------------------------------------------------

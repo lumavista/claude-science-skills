@@ -1,0 +1,71 @@
+{
+  "_README": "Run manifest. State the run's facts here ONCE; every stage takes --run run.json, reads what it needs, and records what it produced under `stages` so the next stage finds it. Paths are relative to this file. Keys starting with _ are comments. Replace every value; delete the optional blocks you do not have. Never edit `stages` by hand.",
+
+  "_host": "The host the line derives from, as far as the paperwork says. Every key is optional; give what you know and delete the rest, or delete the whole block and Stage 2b (host_reference.py) infers the host from the junction tables, stopping to have you ask the user when it cannot. assembly = name, synonym or NCBI accession (GRCh38, hg38, GCF_000001405.40); cell_line = e.g. CHO-K1, HEK293, Vero; fai = the provider's host .fai, which decides the build by contig lengths; annotation = a local GTF for an assembly NCBI does not hold. Never write a human default for a line you do not know is human.",
+  "host": {
+    "species": "Cricetulus griseus",
+    "cell_line": "CHO-K1",
+    "assembly": "CriGri-PICRH-1.0"
+  },
+
+  "_genome_size": "OPTIONAL. Haploid genome size of the HOST in bp. Leave it out and Stage 3 uses the primary-assembly length Stage 2b recorded; a declared value more than 10% from it fails the host_genome_size check.",
+
+  "read_length": 150,
+
+  "_ploidy": "Haploid equivalents per cell. Converts per-haploid figures to per-cell and scales every site ceiling in Stage 4. Measure it; do not assume 2. Many immortalised lines are aneuploid and drift on passage.",
+  "ploidy": 2,
+
+  "_modality": "How the vector got in: nhej | integrase | transposon-pb | transposon-sb | hdr | auto. It decides whether the tandem-array estimator is valid and changes the site count several-fold. Stage 2 checks it against the junction fingerprint and stops if they disagree. `auto` lets Stage 2 report the fingerprint but stops Stage 3.",
+  "modality": "nhej",
+
+  "_primary_mapping": "The construct whose copies per site and site accounting Stage 3 reports.",
+  "primary_mapping": "pAlpha",
+
+  "_vector_ends": "Per construct, the defined ends of the DELIVERED molecule in that construct's own numbering: restriction-site coordinates for a linearized plasmid, LTR termini for a provirus, ITR termini for a transposon. Omit a construct delivered circular with no defined end. Required for integrase, transposon and hdr delivery.",
+  "vector_ends": {
+    "pAlpha": [1, 8412],
+    "pBeta": [1, 7650]
+  },
+
+  "_samples": "One block per sample; the FIRST is the reference sample for cross-sample ratios. junctions = the provider's junction table for each construct that was mapped against separately. dedup_pairs = deduplicated read PAIRS. baseline_depth (preferred) = genome-median per-base depth from the same BAM and filters as the vector depth. depth_files = one `samtools depth -a` file per vector reference; without them copy number is an upper bound and Stage 3 stops. norm (optional) = ratio of deduplicated read counts to the reference sample. A sample with junction tables but no dedup_pairs is used by Stages 2 and 4 and left out of Stage 3.",
+  "samples": {
+    "parental": {
+      "junctions": {
+        "pAlpha": "junctions_parental_pAlpha.tsv",
+        "pBeta": "junctions_parental_pBeta.tsv"
+      },
+      "dedup_pairs": 300000000,
+      "baseline_depth": 27.0,
+      "depth_files": {
+        "pAlpha": "depth_pAlpha_parental.txt",
+        "pBeta": "depth_pBeta_parental.txt"
+      }
+    },
+    "treated": {
+      "junctions": {
+        "pAlpha": "junctions_treated_pAlpha.tsv",
+        "pBeta": "junctions_treated_pBeta.tsv"
+      },
+      "norm": 0.87,
+      "dedup_pairs": 260000000,
+      "baseline_depth": 23.5,
+      "depth_files": {
+        "pAlpha": "depth_pAlpha_treated.txt",
+        "pBeta": "depth_pBeta_treated.txt"
+      }
+    }
+  },
+
+  "_mappings": "OPTIONAL. Per-construct extras for Stage 3 only: contig = the vector contig name inside the depth file when it differs from the construct name; mean_coverage = per-sample mean depth, used ONLY by the fallback routes when there is no depth file. The junction tables and the detected-locus count are filled in from Stage 2 automatically.",
+  "mappings": {
+    "pAlpha": { "contig": "pAlpha_linearized" }
+  },
+
+  "_calibration": "OPTIONAL but valuable, and free. A locus of independently known structure, used to validate the conversion factor, the anchor assumption and the ploidy estimate at once. A single insertion on one homologue of a line with ploidy p is 1/p copies per haploid equivalent. Delete this block if you have no such locus.",
+  "calibration": {
+    "mapping": "pBeta",
+    "locus": "<contig>:<position>",
+    "window": 50,
+    "expected_copies_per_haploid": 0.5
+  }
+}

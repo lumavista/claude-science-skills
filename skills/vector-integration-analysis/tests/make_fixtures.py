@@ -162,6 +162,8 @@ def main() -> int:
                     fh.write("%s\t%d\t%d\n" % (mapping, p, val))
 
     write_concatemer_fixture(out, ident_script=script)
+    write_reconcile_fixture(out)
+    write_spread_fixture(out, ident_script=script)
 
     print("fixtures written to %s" % out)
     print("true copies per haploid: %s"
@@ -202,6 +204,149 @@ def write_concatemer_fixture(out: str, ident_script: str) -> None:
                     expected *= CONCAT_SHARED_FACTOR
                 for p in range(b["start"], b["end"] + 1):
                     val = max(0, round(drng.gauss(expected, expected ** 0.5)))
+                    fh.write("%s\t%d\t%d\n" % (mapping, p, val))
+
+
+# --------------------------------------------------------------------------
+# reconcile_sites fixtures
+# --------------------------------------------------------------------------
+#
+# Junction tables for the two constructs built by write_concatemer_fixture
+# (pDelta 1.5 copies, pEpsilon 28 copies, sharing a 3,800 bp backbone and an
+# 800 bp marker), mapped against each separately. Every feature the
+# reconciliation has to get right is present:
+#
+#   * two loci in pEpsilon-unique cargo              -> certain, pEpsilon
+#   * one locus at pDelta's declared end, in SHARED  -> vector-end, pDelta
+#     backbone, reported by BOTH mappings
+#   * five high-support shared-backbone loci, each   -> the ceiling decides
+#     reported by BOTH mappings (so collapse must
+#     halve them)
+#   * a single-read, single-sample locus             -> sub-threshold tail
+#
+# The declared ends differ between the constructs because they were
+# linearized at different sites -- which is what makes the vector-end tier
+# able to tell them apart inside shared sequence.
+
+RECON_ENDS = {"pDelta": 1200, "pEpsilon": 3000}
+
+#: (contig, host_pos, vector_pos, support_s1, support_s2, in_pDelta_table,
+#:  in_pEpsilon_table)
+RECON_LOCI = [
+    # pEpsilon-unique cargo (3801..5800 of pEpsilon): attributable on sequence
+    ("chr2",  5_000_000, 4200, 40, 36, False, True),
+    ("chr4",  8_000_000, 5200, 33, 30, False, True),
+    # pDelta's linearization site, inside shared backbone: both mappings see
+    # it, but only pDelta has a declared end there
+    ("chr5",  2_000_000, RECON_ENDS["pDelta"], 25, 22, True, True),
+    # shared backbone, away from either declared end: nothing but the copy
+    # number can place these. Descending support, so which one falls off the
+    # ceiling is deterministic.
+    ("chr6",  1_000_000, 2000, 60, 55, True, True),
+    ("chr8",  1_000_000, 2200, 50, 45, True, True),
+    ("chr10", 1_000_000, 2400, 42, 38, True, True),
+    ("chr11", 1_000_000, 2600, 31, 28, True, True),
+    ("chr12", 1_000_000, 2800, 12, 10, True, True),
+    # the noise tail: one read, one sample
+    ("chr13", 1_000_000, 2500,  1,  0, False, True),
+]
+
+
+#: synthetic host contigs for the genome overview: lengths are arbitrary,
+#: not any real assembly's. Every RECON_LOCI contig is present, plus contigs
+#: carrying no locus, so the overview must draw chromosomes without ticks.
+FAI_CONTIGS = [("chr%d" % i, 200_000_000 - (i - 1) * 11_000_000)
+               for i in range(1, 14)] + [("chrX", 120_000_000),
+                                         ("scaffold_9", 9_000_000)]
+
+
+def write_fai(out: str) -> None:
+    offset = 0
+    with open(os.path.join(out, "contigs.fai"), "w") as fh:
+        for name, ln in FAI_CONTIGS:
+            offset += len(name) + 2
+            fh.write("%s\t%d\t%d\t60\t61\n" % (name, ln, offset))
+            offset += ln + ln // 60 + 1
+
+
+def write_reconcile_fixture(out: str) -> None:
+    write_fai(out)
+    for which, mapping in enumerate(("pDelta", "pEpsilon")):
+        for si, sample in enumerate(("s1", "s2")):
+            rows = []
+            for contig, hpos, vpos, s1, s2, in_delta, in_eps in RECON_LOCI:
+                sup = (s1, s2)[si]
+                if sup > 0 and (in_delta, in_eps)[which]:
+                    rows.append((contig, hpos, "R", 0, mapping, vpos, "L", sup))
+            write_table(os.path.join(out, "junctions_recon_%s_%s.tsv"
+                                     % (mapping, sample)),
+                        rows, "right_clip", "left_clip")
+
+
+# --------------------------------------------------------------------------
+# per-unique-block spread fixture (copy_number change C)
+# --------------------------------------------------------------------------
+#
+# pTheta carries TWO separate unique blocks at DIFFERENT depths, so the
+# bp-weighted mean hides a real disagreement unless the per-block estimates
+# are reported. pIota carries ONE small unique block that survives trimming
+# with 150 bp -- under the old `min_class_bp` of 200 it was silently dropped
+# and the construct fell back to the flagged solve.
+
+SPREAD_DEPTHS = {"pTheta_cargoA": 20.0, "pTheta_cargoB": 30.0,
+                 "pIota_unique": 50.0, "shared": 75.0}
+
+
+def write_spread_fixture(out: str, ident_script: str) -> None:
+    import json
+    import subprocess
+    rng = random.Random(SEED + 4)
+    backbone = randseq(rng, 2500)
+    marker = randseq(rng, 800)
+    spacer = randseq(rng, 600)
+    cargo_a = randseq(rng, 1200)
+    cargo_b = randseq(rng, 1200)
+    iota_u = randseq(rng, 450)
+
+    theta = backbone + cargo_a + marker + cargo_b + spacer
+    iota = backbone + marker + spacer + iota_u
+    for name, seq, feats in (
+            ("pTheta", theta, [("backbone", (1, 2500)),
+                               ("cargo-A", (2501, 3700)),
+                               ("selection marker", (3701, 4500)),
+                               ("cargo-B", (4501, 5700)),
+                               ("spacer", (5701, 6300))]),
+            ("pIota", iota, [("backbone", (1, 2500)),
+                             ("selection marker", (2501, 3300)),
+                             ("spacer", (3301, 3900)),
+                             ("cargo-iota", (3901, 4350))])):
+        with open(os.path.join(out, "%s.gb" % name), "w") as fh:
+            fh.write(genbank(name, seq, feats))
+
+    ident_path = os.path.join(out, "identity_spread.json")
+    subprocess.run([sys.executable, ident_script,
+                    os.path.join(out, "pTheta.gb"),
+                    os.path.join(out, "pIota.gb"),
+                    "--out", ident_path], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ident = json.load(open(ident_path))
+    drng = random.Random(SEED + 5)
+
+    def expected(mapping: str, block) -> float:
+        if len(block["membership"]) > 1:
+            return SPREAD_DEPTHS["shared"]
+        if mapping == "pIota":
+            return SPREAD_DEPTHS["pIota_unique"]
+        # pTheta: the first unique block is cargo-A, the second cargo-B
+        return SPREAD_DEPTHS["pTheta_cargoA" if block["start"] < 4000
+                             else "pTheta_cargoB"]
+
+    for mapping, d in ident["constructs"].items():
+        with open(os.path.join(out, "depth_spread_%s.txt" % mapping), "w") as fh:
+            for b in d["blocks"]:
+                e = expected(mapping, b)
+                for p in range(b["start"], b["end"] + 1):
+                    val = max(0, round(drng.gauss(e, e ** 0.5)))
                     fh.write("%s\t%d\t%d\n" % (mapping, p, val))
 
 

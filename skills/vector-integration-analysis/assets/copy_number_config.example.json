@@ -1,5 +1,5 @@
 {
-  "_README": "Config for copy_number.py. Paths are relative to this file. Keys starting with _ are comments and are ignored. Replace every value.",
+  "_README": "Config for copy_number.py, for a stage run on its own. A whole run is better served by the run manifest (assets/run.example.json): `copy_number.py --run run.json` builds this config from what Stages 1 and 2 recorded, so the identity map, the junction tables and the detected-locus count are not retyped here. Paths are relative to this file. Keys starting with _ are comments and are ignored. Replace every value.",
 
   "identity": "identity.json",
 
@@ -17,8 +17,8 @@
   "_primary_mapping": "The construct whose sites you are counting.",
   "primary_mapping": "pAlpha",
 
-  "_trim_mode": "OPTIONAL. Where --edge-trim is applied before averaging depth: 'block-edge' (default, used when this key is absent) trims both ends of every membership block, which removes cross-mapping taper but discards small unique blocks; 'contig-end' trims only the linear reference termini, which keeps small unique blocks but leaves the taper in. A warning names any construct left with < 500 bp of unique sequence. --trim-mode on the command line overrides this. See references/quantification.md section 2.",
-  "trim_mode": "block-edge",
+  "_trim_boundaries": "OPTIONAL. Bases trimmed inward from a block end that abuts a DIFFERENT membership class or a contig terminus, before averaging depth; an end abutting a same-membership block is not trimmed. Defaults to read_length when absent. No block is dropped for being small -- every block with bases left after trimming is used, bp-weighted -- and the per-block estimates and their spread are reported, with a caveat when they disagree. --trim-boundaries on the command line overrides this. The old `edge_trim` and `trim_mode` keys are still accepted with a deprecation warning, and `min_class_bp` is accepted and ignored. See references/quantification.md section 2.",
+  "trim_boundaries": 150,
 
   "_samples": "One block per sample. dedup_pairs = deduplicated read PAIRS, from the provider summary. baseline_depth is OPTIONAL but preferred: the genome-median per-base depth from the same BAM and filters as the vector depth. When present it is the single-genome baseline for copy number; when absent the read-count estimate (dedup_pairs x 2 x read_length / genome_size) is used, which is filtered differently and typically runs high, biasing copy numbers low. depth_files is the PREFERRED input: one `samtools depth -a` file per vector reference, which lets every construct be solved at once instead of estimated. detected_loci is the number of loci Stage 2 actually found, used for the reconciliation.",
   "samples": {

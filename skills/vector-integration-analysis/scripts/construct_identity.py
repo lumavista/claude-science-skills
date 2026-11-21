@@ -21,6 +21,7 @@ Usage
 -----
     python construct_identity.py A.gb B.gb C.gb --out identity.json --md map.md
     python construct_identity.py A.gb B.gb --correspond pA:4809
+    python construct_identity.py A.gb B.gb C.gb --run run.json
 
 Options
 -------
@@ -36,11 +37,13 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from via_common import (Construct, dump_json, load_construct,  # noqa: E402
                         revcomp)
+from via_run import (FAIL, PASS, WARN, Checks, RunError,  # noqa: E402
+                     add_check_arguments, load_run)
 
 
 def kmer_index(c: Construct, k: int) -> set:
@@ -265,6 +268,41 @@ def render_md(ident: Dict) -> str:
     return "\n".join(L)
 
 
+#: a construct with less unique sequence than this is unattributable
+MIN_ATTRIBUTABLE_PCT = 5.0
+
+
+def stage_checks(checks: Checks, ident: Dict, n_refs: int) -> Checks:
+    """What the map says about whether the line can be analysed at all."""
+    thin = {n: d["attributable_pct"] for n, d in ident["constructs"].items()
+            if d["attributable_pct"] < MIN_ATTRIBUTABLE_PCT}
+    if thin:
+        checks.add("attributable", FAIL,
+                   "under %g%% of %s is unique sequence (%s). Junctions in "
+                   "those constructs cannot be attributed on sequence alone "
+                   "and the copy-number solve will be weakly determined: "
+                   "check that every construct in the line has its own "
+                   "reference and that --k suits how diverged they are, and "
+                   "say so in the report if this is simply what the line is."
+                   % (MIN_ATTRIBUTABLE_PCT, ", ".join(sorted(thin)),
+                      ", ".join("%s %.1f%%" % kv for kv in sorted(thin.items()))))
+    else:
+        checks.add("attributable", PASS,
+                   "every construct carries unique sequence: %s"
+                   % ", ".join("%s %.1f%%" % (n, d["attributable_pct"])
+                               for n, d in ident["constructs"].items()))
+
+    if n_refs == 1:
+        checks.add("constructs", WARN,
+                   "one construct in the map. If the line carries more, add "
+                   "their references -- including any the provider did not map "
+                   "against -- before Stage 2, because their sequence is what "
+                   "explains the artefacts their absence created.")
+    else:
+        checks.add("constructs", PASS, "%d constructs compared" % n_refs)
+    return checks
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -284,7 +322,17 @@ def main(argv=None) -> int:
     ap.add_argument("--md", help="write a human-readable map as Markdown")
     ap.add_argument("--correspond", default="",
                     help="comma-separated NAME:POS to map onto every other construct")
+    add_check_arguments(ap)
     a = ap.parse_args(argv)
+
+    try:
+        run = load_run(a.run)
+    except RunError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    if run is not None:
+        a.out = run.output(a.out, "identity.json")
+        a.md = run.output(a.md, "identity_map.md")
 
     if a.k < 15:
         print("error: --k below 15 produces chance matches in random sequence",
@@ -346,6 +394,20 @@ def main(argv=None) -> int:
             fh.write(md)
     if not a.out and not a.md:
         print(md)
+    if run is not None:
+        run.record("identity", {
+            "path": run.relative(a.out), "md": run.relative(a.md),
+            "constructs": {n: ident["constructs"][n]["length"]
+                           for n in ident["construct_order"]}})
+
+    checks = stage_checks(Checks("construct_identity", a.accept), ident,
+                          len(constructs))
+    if a.out:
+        ident["checks"] = checks.as_list()
+        dump_json(ident, a.out)
+    if run is not None:
+        run.record("identity", dict(run.stage("identity"),
+                                    checks=checks.as_list()))
 
     for name, d in ident["constructs"].items():
         print("%s: %s bp | attributable %s bp (%s%%) | boundaries %s"
@@ -358,7 +420,7 @@ def main(argv=None) -> int:
                   "construct are essentially unattributable on sequence alone; "
                   "the copy-number solve will be weakly determined and the "
                   "report must say so." % name, file=sys.stderr)
-    for c in ident.get("correspondence", []):
+    for c in ident.get("correspondence", []):  # noqa: E501
         r = c["result"]
         if isinstance(r, dict):
             print("  %s:%s -> %s:%s (%d bp)%s"
@@ -368,7 +430,7 @@ def main(argv=None) -> int:
         else:
             print("  %s:%s -> %s: no match" % (c["from"], c["pos"], c["to"]),
                   file=sys.stderr)
-    return 0
+    return checks.finish(a.strict)
 
 
 if __name__ == "__main__":
