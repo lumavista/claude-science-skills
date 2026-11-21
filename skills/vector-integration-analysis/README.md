@@ -43,7 +43,8 @@ design, AAV episomal configuration, expression analysis. See
 | 2b | `host_reference.py` | the host organism and assembly (declared, hinted by cell line, or inferred from the host contigs; it stops to have you ask the user when the evidence does not decide), the NCBI assembly report and RefSeq gene annotation, the host `.fai`, and the haploid `genome_size` |
 | 3 | `copy_number.py` | per-construct copy number solved from per-base depth, per-unique-block estimates and their spread, copies per site, implied site count, flank detection, calibration |
 | 4 | `reconcile_sites.py` | **the called-site table**: cross-mapping collapse, retention, construct attribution by strict priority, bounded site count per construct, sub-threshold tail |
-| 5 | `make_figures.py` | the report's standard SVG figures (coverage tracks, genome overview, copy number, site-count bound), and the report template filled with them (`assets/report_template.md`) |
+| 5 | `make_figures.py` | the report's standard SVG figures (coverage tracks, genome overview, copy number, site-count bound) |
+| 6 | `build_report.py` | **the report**: `assets/report_template.md` filled with the figures, tables and values from the stage outputs, as one self-contained HTML file (figures inline, prints to PDF); a `.docx` too when an SVG rasteriser is installed |
 
 ## Quick start
 
@@ -68,9 +69,14 @@ python scripts/copy_number.py --run run.json --strict
 # 4. ONE called-site table: collapse across mappings, retain, attribute
 python scripts/reconcile_sites.py --run run.json --strict
 
-# 5. the report's figures (SVG), then fill the template's [[FIG:...]] slots
-cp assets/report_template.md report.md   # fill the text from the outputs
-python scripts/make_figures.py --run run.json --fill report.md
+# 5. the report's figures (SVG)
+python scripts/make_figures.py --run run.json
+
+# 6. the report: write the prose into a copy of the template, leaving every
+#    [[FIG:]], [[TABLE:]] and [[VAL:]] placeholder in place; the script fills
+#    them and writes report.html (and report.docx if a rasteriser is present)
+cp assets/report_template.md report.md
+python scripts/build_report.py --run run.json --report report.md --strict
 ```
 
 With a host annotation from Stage 2b, `called_sites.tsv` gains, after its
@@ -85,6 +91,16 @@ with the shared-block closure, and the site-count bound per construct. Each is
 driven only by the standard outputs, so it works for any genome and any number
 of constructs. A figure whose input is missing is skipped with a note, not a
 failure; an input that exists but cannot be parsed is exit status 2.
+
+The report comes from `build_report.py`, never assembled by hand. It fills the
+template's figure, table and value placeholders from the stage outputs and
+embeds `make_figures.py`'s SVGs unchanged in one self-contained HTML file: no
+external file, no script, no third-party package, so it builds in a locked-down
+environment and prints to PDF from any browser. The `.docx` is an optional
+extra built only by rasterising those same SVGs (cairosvg or `rsvg-convert`).
+Without a rasteriser it is skipped with the reason, and no substitute chart is
+ever drawn. An image in the prose that the skill did not draw is removed and
+fails the `foreign_figure` check.
 
 Every flag each stage accepts still works; the manifest only removes the need
 to pass them. `--help` on any script lists them. The exceptions are
@@ -250,6 +266,17 @@ confidence tiers intact. Each coverage track must shade every identity-map
 block and show the baseline and the trimmed bases. A missing input must skip
 its figure with a reason rather than fail the run. `--fill` must leave no
 figure slot unfilled in the report body.
+
+For the report it asserts that `build_report.py` runs under `python -I -S` (no
+site-packages) and imports nothing outside the standard library, and that its
+HTML embeds every figure inline exactly as `make_figures.py` wrote it (the
+coverage tracks and the genome overview included). The HTML must fetch nothing
+external, carry the called-site table value for value, and hold no unfilled
+`[[...]]` placeholder. A rebuild must be byte-identical. Without a rasteriser
+the docx is skipped with its reason; with one, the docx holds one image per
+skill figure and no other. An image pasted into the prose fails `--strict`
+and cannot be accepted away. A dropped figure slot appends the figure rather
+than losing it, and a missing `figures.json` stops the build.
 
 For the run manifest and the checks it asserts that the manifest route
 reproduces the flag-and-config route byte for byte on the loci, called-site and

@@ -1179,6 +1179,172 @@ assert_has "the warning lists the constructs that have coverage figures" \
 assert_lacks "an edited template draws no such warning" fill.log "WARNING"
 
 echo
+echo "== Report: build_report.py assembles the deliverable =="
+# The report is a script output: the template filled from the stage outputs,
+# the skill's own SVGs embedded inline. The model writes prose only.
+# (mf/ is the manifest run above; its .fai comes from the fixtures.)
+"$PY" "$SCRIPTS/make_figures.py" --run mf/run.json --fai contigs.fai >br_figs.log 2>&1 \
+  || { bad "make_figures --run for the report"; cat br_figs.log; }
+# -I -S: no site-packages, so nothing third-party can be imported
+expect_exit "build_report runs with the standard library only (python -I -S)" 0 br.log \
+  "$PY" -I -S "$SCRIPTS/build_report.py" --run mf/run.json --rasteriser none --strict
+"$PY" - <<'EOF' >br_check.log 2>&1
+import csv, json, re, xml.etree.ElementTree as ET
+h = open("mf/report.html", encoding="utf-8").read()
+figs = json.load(open("mf/figures/figures.json"))["figures"]
+ids = [f["id"] for f in figs]
+need = [i for i in ids if i.startswith("coverage_")] + ["genome_overview"]
+assert len(need) >= 3, ids                      # two coverage tracks + overview
+# (a) every figure inline, as make_figures.py drew it, byte for byte
+svgs = re.findall(r"<svg\b.*?</svg>", h, re.S)
+assert len(svgs) == len(ids), (len(svgs), ids)
+for i in ids:
+    assert 'data-figure-id="%s"' % i in h, i
+    src = open("mf/figures/%s.svg" % i, encoding="utf-8").read()
+    src = re.sub(r"^\s*<\?xml[^>]*\?>\s*", "", src).strip()
+    assert src in h, "figure %s not embedded unchanged" % i
+for s in svgs:
+    assert ET.fromstring(s).tag == "{http://www.w3.org/2000/svg}svg"
+# self-contained: nothing fetched from anywhere
+for bad in ("<img", "src=", "<link", "<script", "url(http", "@import"):
+    assert bad not in h, bad
+# (b) the called-site table, value for value
+rows = list(csv.DictReader(open("mf/called_sites.tsv"), delimiter="\t"))
+cells = re.findall(r"<td>(.*?)</td>", h)
+for r in rows:
+    locus = "%s:%s" % (r["contig"], r["start"])
+    assert locus in cells, locus
+    i = cells.index(locus)
+    for k in ("confidence", "evidence", "total_support"):
+        assert (r[k] or "—") in cells[i:i + 16], (locus, k, r[k])
+summ = json.load(open("mf/site_summary.json"))
+for c, d in summ["per_construct"].items():
+    assert "%s %s site" % (c, d["site_range"]) in h, (c, d["site_range"])
+# (c) no placeholder survives, anywhere in the file
+left = re.findall(r"\[\[[^\]]*\]\]", h)
+assert not left, left
+print("OK")
+EOF
+if grep -q "^OK$" br_check.log; then
+  ok "HTML embeds every figure inline (coverage tracks, genome_overview), unchanged"
+  ok "HTML is self-contained: no external file, script or stylesheet"
+  ok "HTML carries the called-site table values and the site range"
+  ok "HTML has no unfilled [[...]] placeholder"
+else
+  bad "report content"; cat br_check.log br.log
+fi
+assert_has "the build names the figures it embedded" br.log \
+  "figure\(s\) inline: coverage_s1_pDelta, coverage_s1_pEpsilon, genome_overview"
+assert_has "the build is recorded in the manifest" mf/run.json '"report": \{'
+"$PY" - "$SCRIPTS/build_report.py" <<'EOF' >br_imports.log 2>&1
+import ast, sys
+tree = ast.parse(open(sys.argv[1]).read())
+top, nested = set(), set()
+for node in ast.walk(tree):
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""]
+        for n in names:
+            (top if node.col_offset == 0 else nested).add(n.split(".")[0])
+everything = top | nested
+assert not {"matplotlib", "pylab", "seaborn", "plotly", "PIL"} & everything, everything
+local = {"via_run", "via_common", "__future__"}
+std = getattr(sys, "stdlib_module_names", None)
+if std is not None:
+    assert top <= set(std) | local, top - set(std) - local
+    # the only optional import is the docx rasteriser, inside a function
+    assert nested - set(std) - local <= {"cairosvg"}, nested
+print("OK")
+EOF
+grep -q "^OK$" br_imports.log && ok "no plotting import; top-level imports are standard library" \
+  || { bad "build_report imports"; cat br_imports.log; }
+cp mf/report.html br_first.html
+"$PY" "$SCRIPTS/build_report.py" --run mf/run.json --rasteriser none >br2.log 2>&1
+cmp -s br_first.html mf/report.html && ok "the report is deterministic: a rerun is byte-identical" \
+  || bad "two builds of the same inputs differ"
+
+# docx: optional, and only ever the skill's figures
+assert_has "no rasteriser: docx skipped, the reason given" br.log "docx: skipped \(--rasteriser none"
+assert_has "and the HTML named as the deliverable" br.log "HTML report is the deliverable: .*report\.html"
+[ ! -e mf/report.docx ] && ok "no docx written without a rasteriser" || bad "a docx appeared without a rasteriser"
+cat > fake_rsvg.py <<'EOF'
+# stands in for rsvg-convert: a valid PNG sized from the SVG's width/height
+import re, struct, sys, zlib
+svg = open(sys.argv[1]).read()
+w, h = (int(float(x)) for x in re.search(r'<svg[^>]*width="([\d.]+)"[^>]*height="([\d.]+)"', svg).groups())
+raw = b"".join(b"\x00" + b"\xff\xff\xff" * w for _ in range(h))
+chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+open(sys.argv[2], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                              + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+EOF
+expect_exit "with a rasteriser, the docx is built" 0 br_docx.log \
+  "$PY" "$SCRIPTS/build_report.py" --run mf/run.json \
+  --rasteriser-cmd "$PY fake_rsvg.py {svg} {png}" --docx br.docx
+"$PY" - <<'EOF' >br_docx_check.log 2>&1
+import json, zipfile, xml.etree.ElementTree as ET
+z = zipfile.ZipFile("br.docx")
+assert z.testzip() is None
+media = sorted(n for n in z.namelist() if n.startswith("word/media/"))
+ids = [f["id"] for f in json.load(open("mf/figures/figures.json"))["figures"]]
+assert len(media) == len(ids), (media, ids)            # one image per skill figure, no other
+for n in ("word/document.xml", "word/styles.xml", "[Content_Types].xml",
+          "word/_rels/document.xml.rels", "_rels/.rels"):
+    ET.fromstring(z.read(n))
+doc = z.read("word/document.xml").decode()
+for i in ids:
+    assert 'name="%s"' % i in doc, i
+assert "chr2:5000000" in doc
+print("OK")
+EOF
+grep -q "^OK$" br_docx_check.log \
+  && ok "docx: well-formed, one embedded image per skill figure and no other" \
+  || { bad "docx content"; cat br_docx_check.log br_docx.log; }
+expect_exit "a rasteriser that fails skips the docx; the HTML still stands" 0 br_rfail.log \
+  "$PY" "$SCRIPTS/build_report.py" --run mf/run.json --rasteriser-cmd "false {svg} {png}" \
+  --docx br_fail.docx
+assert_has "the failure is named" br_rfail.log "docx: skipped \(rasterising .* failed"
+[ ! -e br_fail.docx ] && ok "no partial docx after a rasteriser failure" || bad "partial docx left behind"
+
+# the prose is the model's; figures, tables and numbers are not
+cp "$HERE/../assets/report_template.md" mf/prose.md
+"$PY" - <<'EOF'
+t = open("mf/prose.md").read()
+t = t.replace("<two or three sentences>", "HEADLINE-PROSE-MARKER.")
+t = t.replace("[[FIG:genome_overview]]", "![my own map](my_map.png)\n\n<img src=\"x.png\">")
+t = t.replace("<line name>", "[[VAL:name:<construct C>]] [[TABLE:no_such_table]]")
+open("mf/prose.md", "w").write(t)
+EOF
+expect_exit "an image the skill did not draw fails --strict" 3 br_foreign.log \
+  "$PY" "$SCRIPTS/build_report.py" --run mf/run.json --report mf/prose.md \
+  --out-html br_foreign.html --rasteriser none --strict
+assert_has "foreign_figure names the image" br_foreign.log "CHECK FAILED \[foreign_figure\].*my_map\.png"
+assert_lacks "the foreign image is not in the report" br_foreign.html \
+  '<img|<[^>]*src=|href="(my_map|x)\.png"'
+assert_has "the prose written into the template is kept" br_foreign.html "HEADLINE-PROSE-MARKER"
+assert_has "a dropped figure slot: the figure is appended, not lost" br_foreign.html \
+  'Appendix: figures no template slot.*|data-figure-id="genome_overview"'
+assert_has "and that is warned about" br_foreign.log "CHECK WARNING \[figures_placed\].*genome_overview"
+assert_has "a third construct on a two-construct line is 'not applicable'" br_foreign.html \
+  "not applicable: the line carries 2 constructs"
+assert_has "an unknown placeholder is named, not left in" br_foreign.log "unknown placeholder"
+assert_lacks "and nothing bracketed survives" br_foreign.html "\[\[[^]]*\]\]"
+expect_exit "foreign_figure cannot be accepted away" 3 br_foreign_acc.log \
+  "$PY" "$SCRIPTS/build_report.py" --run mf/run.json --report mf/prose.md \
+  --out-html br_foreign.html --rasteriser none --strict --accept foreign_figure
+assert_has "the --accept is refused" br_foreign_acc.log "accept foreign_figure refused"
+
+# the stages must have run, and make_figures before build_report
+mkdir -p empty_figs
+expect_exit "no figures.json stops --strict" 3 br_nofig.log \
+  "$PY" "$SCRIPTS/build_report.py" --run mf/run.json --figures empty_figs \
+  --out-html br_nofig.html --rasteriser none --strict
+assert_has "and says to run make_figures.py" br_nofig.log "CHECK FAILED \[figures_drawn\].*make_figures.py"
+assert_has "each figure slot explains itself" br_nofig.html "Figure genome_overview not generated"
+expect_exit "an output that would overwrite the prose is refused" 2 br_clobber.log \
+  "$PY" "$SCRIPTS/build_report.py" --run mf/run.json --report mf/prose.md --out-md mf/prose.md
+expect_exit "an unreadable manifest is exit 2" 2 br_badrun.log \
+  "$PY" "$SCRIPTS/build_report.py" --run broken.json
+
+echo
 echo "== Final stage: do the called sites account for the DNA? =="
 acct() { rs --loci pDelta=loci_recon_pDelta.tsv --loci pEpsilon=loci_recon_pEpsilon.tsv \
   --ploidy 2 --vector-ends pDelta=1200 --vector-ends pEpsilon=3000 "$@"; }
