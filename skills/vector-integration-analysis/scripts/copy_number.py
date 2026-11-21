@@ -58,12 +58,12 @@ from typing import Dict, List, Optional, Sequence, Tuple
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from via_common import (MODALITIES, load_json, read_depth_file,  # noqa: E402
                         solve_wls)
-from via_run import (FAIL, PASS, WARN, Checks, RunError,  # noqa: E402
-                     add_check_arguments, copy_number_config, load_run)
+from via_run import (FAIL, PASS, WARN, Checks, InputError,  # noqa: E402
+                     RunError, add_check_arguments, copy_number_config,
+                     load_run)
 
-# Derived from the one modality table, so the two stages cannot disagree about
-# whether a delivery route can form arrays.
-CONCATEMER_CAPABLE = {name: m["concatemers"] for name, m in MODALITIES.items()}
+#: Copies per site for the routes that fix it, from the one modality table --
+#: so the stages cannot disagree about whether a route can form arrays.
 FIXED_COPIES_PER_SITE = {name: 1 for name, m in MODALITIES.items()
                          if m["concatemers"] is False}
 
@@ -98,13 +98,14 @@ def genome_coverage(dedup_pairs: float, read_length: int,
     return dedup_pairs * 2 * read_length / genome_size
 
 
-def choose_baseline(sample_cfg: Dict, C: float) -> Tuple[float, bool, str]:
+def choose_baseline(sample_cfg: Dict, coverage: float
+                    ) -> Tuple[float, bool, str]:
     """Single-genome baseline for copy number, and a line saying which.
 
     The genome-median per-base depth is filtered exactly as the vector depth
-    is (same BAM, same samtools filters); the read-count C is not, and
-    typically runs high, biasing every copy number low. C itself is still what
-    the junction conversion factor uses, since junction support is a read
+    is (same BAM, same samtools filters); the read-count estimate is not, and
+    typically runs high, biasing every copy number low. That estimate is still
+    what the junction conversion factor uses, since junction support is a read
     count.
     """
     bd = sample_cfg.get("baseline_depth")
@@ -113,19 +114,19 @@ def choose_baseline(sample_cfg: Dict, C: float) -> Tuple[float, bool, str]:
             "copy-number baseline: genome-median per-base depth %.2fx "
             "(baseline_depth; read-count estimate would be %.2fx). The "
             "genome median is preferred because it is filtered identically "
-            "to the vector depth." % (float(bd), C))
-    return C, False, (
+            "to the vector depth." % (float(bd), coverage))
+    return coverage, False, (
         "copy-number baseline: read-count estimate %.2fx "
         "(dedup_pairs x 2 x read_length / genome_size). A genome-median "
         "per-base depth (`baseline_depth`) is preferred when available "
         "because it is filtered identically to the vector depth; the "
         "read-count figure typically runs high and biases copy numbers "
-        "low." % C)
+        "low." % coverage)
 
 
-def conversion_factor(C: float, read_length: int, anchor: int) -> float:
+def conversion_factor(coverage: float, read_length: int, anchor: int) -> float:
     """Reads expected to support one junction present at one copy per haploid."""
-    return max(0.0, C * (read_length - 2 * anchor) / read_length)
+    return max(0.0, coverage * (read_length - 2 * anchor) / read_length)
 
 
 # --------------------------------------------------------------------------
@@ -291,17 +292,19 @@ def unique_block_spread(ublocks: Dict[str, List[Dict]], baseline: float
     individual estimates are always reported beside it.
     """
     out: Dict[str, Dict] = {}
-    B = baseline or 1.0
+    base = baseline or 1.0
     for n, bl in ublocks.items():
         rows = [{"mapping": b["mapping"], "start": b["start"], "end": b["end"],
                  "retained": [b["lo"], b["hi"]], "bp": b["bases"],
-                 "depth": round(b["mean"], 2), "copies": round(b["mean"] / B, 3)}
+                 "depth": round(b["mean"], 2),
+                 "copies": round(b["mean"] / base, 3)}
                 for b in bl]
         bp = sum(r["bp"] for r in rows)
-        mean = bp_weighted(bl, _mean, _bases) / B
-        cps = [b["mean"] / B for b in bl]
+        mean = bp_weighted(bl, _mean, _bases) / base
+        cps = [b["mean"] / base for b in bl]
         if len(cps) > 1 and mean > 0:
-            var = bp_weighted(bl, lambda b: (b["mean"] / B - mean) ** 2, _bases)
+            var = bp_weighted(bl, lambda b: (b["mean"] / base - mean) ** 2,
+                              _bases)
             rel_range = (max(cps) - min(cps)) / mean
             cv = var ** 0.5 / mean
         else:
@@ -648,7 +651,7 @@ def architecture(cfg: Dict, jrows: Dict[str, List[Dict]], mapping: str,
                  "end_religation_included": include_end_religation,
                  "modality": modality, "notes": out_notes}
 
-    capable = CONCATEMER_CAPABLE.get(modality)
+    capable = MODALITIES[modality]["concatemers"]
     if capable is False:
         n = float(FIXED_COPIES_PER_SITE.get(modality, 1))
         out["copies_per_site"] = n
@@ -702,12 +705,12 @@ def architecture(cfg: Dict, jrows: Dict[str, List[Dict]], mapping: str,
     return out
 
 
-def flank_detection(cfg: Dict, C: float, flank_reads: int,
+def flank_detection(cfg: Dict, coverage: float, flank_reads: int,
                     implied_sites: Optional[float],
                     anchors: Sequence[int]) -> List[Dict]:
     sweep = []
     for anchor in anchors:
-        R = conversion_factor(C, cfg["read_length"], anchor)
+        R = conversion_factor(coverage, cfg["read_length"], anchor)
         detected = flank_reads / R if R else None
         sweep.append({
             "anchor": anchor,
@@ -746,7 +749,7 @@ def reconcile(implied: Optional[float], detected_loci: Optional[int],
             "ratio": round(ratio, 2), "verdict": v}
 
 
-def calibrate(cfg: Dict, jrows: Dict[str, List[Dict]], C: float,
+def calibrate(cfg: Dict, jrows: Dict[str, List[Dict]], coverage: float,
               sample: str, anchors: Sequence[int]) -> Optional[Dict]:
     cal = cfg.get("calibration")
     if not cal:
@@ -766,7 +769,7 @@ def calibrate(cfg: Dict, jrows: Dict[str, List[Dict]], C: float,
     mean = sum(hits) / len(hits)
     est = []
     for anchor in anchors:
-        R = conversion_factor(C, cfg["read_length"], anchor)
+        R = conversion_factor(coverage, cfg["read_length"], anchor)
         est.append({"anchor": anchor, "reads_per_copy": round(R, 2),
                     "implied_copies": round(mean / R, 3) if R else None})
     exp = cal["expected_copies_per_haploid"]
@@ -848,9 +851,9 @@ def render_measured(s: str, d: Dict, order: List[str]) -> List[str]:
     sol = d["solve"]
     if "source" not in sol:
         return []
-    L: List[str] = []
-    B = d["baseline_depth"] or 1.0
-    L += ["### %s -- per-construct estimate" % s, "",
+    lines: List[str] = []
+    baseline_depth = d["baseline_depth"] or 1.0
+    lines += ["### %s -- per-construct estimate" % s, "",
           "Each construct's copy number is the depth over the bases only it "
           "carries, read directly (trim %d bp, policy `%s`; every block with "
           "bases left after trimming is kept, bp-weighted). The stacked "
@@ -863,33 +866,33 @@ def render_measured(s: str, d: Dict, order: List[str]) -> List[str]:
     wls = sol.get("wls_depths") or {}
     for n in order:
         c = d["copies_per_haploid"].get(n)
-        L.append("| %s | %s | %s | %s | %s |"
+        lines.append("| %s | %s | %s | %s | %s |"
                  % (n, "%.2f" % c if c is not None else "not reported",
                     sol["source"].get(n, "-"),
                     format(sol["unique_bp"].get(n, 0), ","),
-                    "%.2f" % (wls[n] / B) if n in wls else "-"))
-    L.append("")
-    L += _render_unique_blocks(sol.get("unique_blocks") or {}, order)
+                    "%.2f" % (wls[n] / baseline_depth) if n in wls else "-"))
+    lines.append("")
+    lines += _render_unique_blocks(sol.get("unique_blocks") or {}, order)
     if sol.get("wls_note"):
-        L += ["Stacked solve: %s." % sol["wls_note"], ""]
-    L += _render_closure(sol.get("closure"))
+        lines += ["Stacked solve: %s." % sol["wls_note"], ""]
+    lines += _render_closure(sol.get("closure"))
     if sol.get("classes_used"):
-        L += ["Stacked solve: %d equations, %d unknowns, weighted relative "
+        lines += ["Stacked solve: %d equations, %d unknowns, weighted relative "
               "residual %s." % (sol["equations"], sol["unknowns"],
                                 sol["weighted_relative_rss"]),
               "",
               "| Reference | Bases carried by | bp used | observed | WLS predicted | residual |",
               "|---|---|---|---|---|---|"]
         for c in sol["classes_used"]:
-            L.append("| %s | %s | %s | %.2f | %.2f | %+.2f |"
+            lines.append("| %s | %s | %s | %.2f | %.2f | %+.2f |"
                      % (c["mapping"], " + ".join(c["membership"]),
                         format(c["bases"], ","), c["mean_depth"],
                         c["predicted_depth"], c["residual"]))
-        L += ["", "Large residuals mean the block map does not explain the "
+        lines += ["", "Large residuals mean the block map does not explain the "
               "depth: a repeat shared with the host genome, an unlisted "
               "construct, non-uniform library coverage, or shared-backbone "
               "loss.", ""]
-    return L
+    return lines
 
 
 def render(cfg: Dict, result: Dict) -> str:
@@ -1097,7 +1100,22 @@ def copies_per_site_summary(result: Dict) -> Optional[float]:
     return max(vals) if vals else None
 
 
-def resolve_trim(a: argparse.Namespace, cfg: Dict
+def trim_from_config(cfg: Dict, default: int = 150
+                     ) -> Tuple[int, List[str]]:
+    """The boundary trim a copy-number config asks for, and any deprecation
+    notes it earned. Used by `resolve_trim` here and by make_figures.py, so a
+    coverage track is trimmed exactly as the copy number was."""
+    notes: List[str] = []
+    if cfg.get("trim_boundaries") is not None:
+        return int(cfg["trim_boundaries"]), notes
+    if cfg.get("edge_trim") is not None:
+        notes.append("config key `edge_trim` is deprecated; rename it "
+                     "`trim_boundaries`.")
+        return int(cfg["edge_trim"]), notes
+    return int(cfg.get("read_length") or default), notes
+
+
+def resolve_trim(args: argparse.Namespace, cfg: Dict
                  ) -> Tuple[int, str, List[str]]:
     """Trim length and policy from CLI and config, mapping deprecated keys.
 
@@ -1106,21 +1124,16 @@ def resolve_trim(a: argparse.Namespace, cfg: Dict
     `trim_mode`, `--min-class-bp` / `min_class_bp`.
     """
     notes: List[str] = []
-    trim = a.trim_boundaries
-    if trim is None and a.edge_trim:
-        trim = a.edge_trim
+    trim = args.trim_boundaries
+    if trim is None and args.edge_trim:
+        trim = args.edge_trim
         notes.append("--edge-trim is deprecated; use --trim-boundaries "
                      "(same meaning).")
-    if trim is None and cfg.get("trim_boundaries") is not None:
-        trim = int(cfg["trim_boundaries"])
-    if trim is None and cfg.get("edge_trim") is not None:
-        trim = int(cfg["edge_trim"])
-        notes.append("config key `edge_trim` is deprecated; rename it "
-                     "`trim_boundaries`.")
     if not trim:
-        trim = int(cfg["read_length"])
+        trim, cfg_notes = trim_from_config(cfg)
+        notes += cfg_notes
 
-    mode = a.trim_mode
+    mode = args.trim_mode
     if mode is not None:
         notes.append("--trim-mode is deprecated; trimming now follows the "
                      "trim_boundaries policy.")
@@ -1138,13 +1151,13 @@ def resolve_trim(a: argparse.Namespace, cfg: Dict
                      "the cross-mapping taper at membership boundaries in. "
                      "Prefer the default trim_boundaries policy, which no "
                      "longer drops small blocks.")
-    if a.min_class_bp is not None or "min_class_bp" in cfg:
+    if args.min_class_bp is not None or "min_class_bp" in cfg:
         notes.append("min_class_bp is deprecated and ignored: every class with "
                      "retained bases is used, bp-weighted.")
     return trim, policy, notes
 
 
-def main(argv=None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1185,87 +1198,182 @@ def main(argv=None) -> int:
                          "input molecule and by any co-resident construct whose "
                          "equivalent site is intact, so they are ambiguous.")
     add_check_arguments(ap)
-    a = ap.parse_args(argv)
+    return ap
 
-    skipped_samples: List[str] = []
+
+def read_config(args: argparse.Namespace
+                ) -> Tuple[Optional[object], Dict, List[str]]:
+    """The config, from `--config` or the run manifest, with its base
+    directory recorded in `_base` and this stage's outputs named."""
     try:
-        run = load_run(a.run)
-        if a.config:
-            cfg = load_json(a.config)
-            base = os.path.dirname(os.path.abspath(a.config))
+        run = load_run(args.run)
+        skipped_samples: List[str] = []
+        if args.config:
+            cfg = load_json(args.config)
+            base = os.path.dirname(os.path.abspath(args.config))
         elif run is not None:
             cfg, skipped_samples = copy_number_config(run)
             base = run.base
         else:
-            print("error: give a config file, or --run RUN.json",
-                  file=sys.stderr)
-            return 2
+            raise InputError("give a config file, or --run RUN.json")
     except RunError as exc:
-        print("error: %s" % exc, file=sys.stderr)
-        return 2
+        raise InputError(str(exc))
     except (OSError, ValueError) as exc:
-        print("error: cannot read config: %s" % exc, file=sys.stderr)
-        return 2
+        raise InputError("cannot read config: %s" % exc)
     if run is not None:
-        a.md = run.output(a.md, "accounting.md")
-        a.json = run.output(a.json, "accounting.json")
+        args.md = run.output(args.md, "accounting.md")
+        args.json = run.output(args.json, "accounting.json")
     cfg = {k: v for k, v in cfg.items() if not k.startswith("_")}
     cfg["_base"] = base
-
-    for key in ("identity", "genome_size", "read_length", "samples", "mappings"):
+    for key in ("identity", "genome_size", "read_length", "samples",
+                "mappings"):
         if key not in cfg:
-            print("error: config is missing %r%s" % (
+            raise InputError("config is missing %r%s" % (
                 key, " (declare it in the manifest, or run host_reference.py "
                      "--run first to take it from the host assembly)"
-                if key == "genome_size" else ""), file=sys.stderr)
-            return 2
+                if key == "genome_size" else ""))
+    return run, cfg, skipped_samples
 
+
+def read_stage_inputs(cfg: Dict) -> Tuple[Dict, Dict[str, List[Dict]], str,
+                                          str]:
+    """The identity map, each mapping's classified junctions, the primary
+    mapping and the modality -- validated against each other."""
+    base = cfg["_base"]
     try:
         ident = load_json(cfg["identity"] if os.path.isabs(cfg["identity"])
                           else os.path.join(base, cfg["identity"]))
     except (OSError, ValueError) as exc:
-        print("error: cannot read identity map: %s" % exc, file=sys.stderr)
-        return 2
+        raise InputError("cannot read identity map: %s" % exc)
 
     unknown = [n for n in cfg["mappings"] if n not in ident["constructs"]]
     if unknown:
-        print("error: mapping(s) %s are not in the identity map (%s). The "
-              "identity map must cover every construct in the line, including "
-              "ones the provider did not map against."
-              % (unknown, ", ".join(ident["constructs"])), file=sys.stderr)
-        return 2
+        raise InputError(
+            "mapping(s) %s are not in the identity map (%s). The identity map "
+            "must cover every construct in the line, including ones the "
+            "provider did not map against."
+            % (unknown, ", ".join(ident["constructs"])))
 
     jrows: Dict[str, List[Dict]] = {}
     for name, m in cfg["mappings"].items():
-        p = m.get("junctions")
-        if not p:
+        path = m.get("junctions")
+        if not path:
             continue
         try:
             jrows[name] = read_classified(
-                p if os.path.isabs(p) else os.path.join(base, p))
+                path if os.path.isabs(path) else os.path.join(base, path))
         except (OSError, ValueError) as exc:
-            print("error: %s" % exc, file=sys.stderr)
-            return 2
+            raise InputError(str(exc))
 
     primary = cfg.get("primary_mapping", list(cfg["mappings"])[0])
     if primary not in cfg["mappings"]:
-        print("error: primary_mapping %r is not one of %s"
-              % (primary, ", ".join(cfg["mappings"])), file=sys.stderr)
-        return 2
+        raise InputError("primary_mapping %r is not one of %s"
+                         % (primary, ", ".join(cfg["mappings"])))
     modality = cfg.get("modality", "auto")
-    if modality not in CONCATEMER_CAPABLE:
-        print("error: modality %r unknown; expected one of %s"
-              % (modality, ", ".join(sorted(CONCATEMER_CAPABLE))), file=sys.stderr)
-        return 2
+    if modality not in MODALITIES:
+        raise InputError("modality %r unknown; expected one of %s"
+                         % (modality, ", ".join(sorted(MODALITIES))))
+    return ident, jrows, primary, modality
+
+
+def measure_sample(args: argparse.Namespace, cfg: Dict, ident: Dict,
+                   jrows: Dict[str, List[Dict]], sample: str, primary: str,
+                   modality: str, trim: int, policy: str,
+                   anchors: Sequence[int]) -> Tuple[Dict, List[str]]:
+    """One sample's copy numbers, architecture and reconciliation, plus the
+    caveats it earned. Reads nothing and writes nothing."""
+    sample_cfg = cfg["samples"][sample]
+    if "dedup_pairs" not in sample_cfg:
+        raise InputError("sample %r has no dedup_pairs" % sample)
+    coverage = genome_coverage(float(sample_cfg["dedup_pairs"]),
+                               int(cfg["read_length"]),
+                               float(cfg["genome_size"]))
+    baseline, use_median, baseline_note = choose_baseline(sample_cfg,
+                                                          coverage)
+    print("%s: %s" % (sample, baseline_note), file=sys.stderr)
+    sol = solve_measured(cfg, ident, sample, trim, baseline, policy,
+                         args.min_unique_bp, args.max_unique_spread)
+    if sol is None:
+        sol = solve_inferred(cfg, ident, sample, jrows)
+    caveats = ["[%s] %s" % (sample, c) if len(cfg["samples"]) > 1 else c
+               for c in sol.get("caveats", [])]
+
+    copies = {n: (v / baseline if baseline and v is not None else None)
+              for n, v in sol["depths"].items()}
+    cn = copies.get(primary)
+    if cn is None and primary in sol["depths"]:
+        # measured route withheld the number: do not let it become a 0
+        arch_cn: Optional[float] = None
+    else:
+        arch_cn = cn if cn else 0.0
+    arch = architecture(cfg, jrows, primary, sample, arch_cn, modality,
+                        args.include_end_religation)
+    caveats += [n for n in arch["notes"]
+                if "does not appear in the junction table" in n]
+    detected = sample_cfg.get("detected_loci")
+    if detected is None:
+        detected = cfg["mappings"][primary].get("detected_loci")
+    return {
+        "genome_coverage": round(coverage, 2),
+        "baseline_depth": round(baseline, 2),
+        "baseline_source": ("genome-median per-base depth" if use_median
+                            else "read count"),
+        "baseline_note": baseline_note,
+        "solve": sol,
+        "depths": sol["depths"],
+        "copies_per_haploid": {n: (round(v, 3) if v is not None else None)
+                               for n, v in copies.items()},
+        "copies_per_cell": {n: (round(v * float(cfg.get("ploidy", 2)), 3)
+                                if v is not None else None)
+                            for n, v in copies.items()},
+        "architecture": arch,
+        "detected_loci": detected,
+        "reconciliation": reconcile(arch["implied_sites"], detected),
+        "flank_detection": flank_detection(cfg, coverage, arch["flank_reads"],
+                                           arch["implied_sites"], anchors),
+        "calibration": calibrate(cfg, jrows, coverage, sample, anchors),
+    }, caveats
+
+
+def write_outputs(args: argparse.Namespace, cfg: Dict, result: Dict) -> None:
+    md = render(cfg, result)
+    if args.md:
+        with open(args.md, "w", encoding="utf-8") as fh:
+            fh.write(md)
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as fh:
+            json.dump(result, fh, indent=2)
+    if not args.md and not args.json:
+        print(md)
+
+
+def report_stderr(result: Dict, caveats: Sequence[str]) -> None:
+    for c in caveats:
+        print("  CAVEAT: %s" % c, file=sys.stderr)
+    for sample, d in result["samples"].items():
+        parts = " | ".join("%s %s" % (n, v) for n, v in
+                           d["copies_per_haploid"].items())
+        print("%s: genome %.1fx | %s | route: %s"
+              % (sample, d["genome_coverage"], parts, d["solve"]["method"]),
+              file=sys.stderr)
+        arch = d["architecture"]
+        print("    copies/site %s -> %s sites implied | %s"
+              % (arch["copies_per_site"], arch["implied_sites"],
+                 d["reconciliation"]["verdict"].split(":")[0]),
+              file=sys.stderr)
+
+
+def run_stage(args: argparse.Namespace) -> int:
+    run, cfg, skipped_samples = read_config(args)
+    ident, jrows, primary, modality = read_stage_inputs(cfg)
 
     try:
-        trim, policy, deprecations = resolve_trim(a, cfg)
+        trim, policy, deprecations = resolve_trim(args, cfg)
     except ValueError as exc:
-        print("error: %s" % exc, file=sys.stderr)
-        return 2
+        raise InputError(str(exc))
     for d in deprecations:
         print("  DEPRECATED: %s" % d, file=sys.stderr)
-    anchors = [int(x) for x in a.anchors.split(",") if x.strip()]
+    anchors = [int(x) for x in args.anchors.split(",") if x.strip()]
 
     result: Dict = {"primary_mapping": primary, "modality": modality,
                     "samples": {}, "caveats": [],
@@ -1274,99 +1382,43 @@ def main(argv=None) -> int:
     caveats: List[str] = []
     if modality == "auto":
         caveats.append(
-            "The delivery modality is undeclared. Whether one site carries one "
-            "copy or a tandem array is a property of the mechanism, not of the "
-            "data, and it changes the site count several-fold. Settle it from "
-            "the Stage 2 fingerprint and set `modality` in the config.")
+            "The delivery modality is undeclared. Whether one site carries "
+            "one copy or a tandem array is a property of the mechanism, not "
+            "of the data, and it changes the site count several-fold. Settle "
+            "it from the Stage 2 fingerprint and set `modality` in the "
+            "config.")
 
-    for sample, s in cfg["samples"].items():
-        if "dedup_pairs" not in s:
-            print("error: sample %r has no dedup_pairs" % sample, file=sys.stderr)
-            return 2
-        C = genome_coverage(float(s["dedup_pairs"]), int(cfg["read_length"]),
-                            float(cfg["genome_size"]))
-        B, use_median, baseline_note = choose_baseline(s, C)
-        print("%s: %s" % (sample, baseline_note), file=sys.stderr)
-        sol = solve_measured(cfg, ident, sample, trim, B, policy,
-                             a.min_unique_bp, a.max_unique_spread)
-        if sol is None:
-            sol = solve_inferred(cfg, ident, sample, jrows)
-        for c in sol.get("caveats", []):
-            if c not in caveats:
-                caveats.append("[%s] %s" % (sample, c) if len(cfg["samples"]) > 1 else c)
-
-        copies = {n: (v / B if B and v is not None else None)
-                  for n, v in sol["depths"].items()}
-        cn = copies.get(primary)
-        if cn is None and primary in sol["depths"]:
-            # measured route withheld the number: do not let it become a 0
-            arch_cn: Optional[float] = None
-        else:
-            arch_cn = cn if cn else 0.0
-        arch = architecture(cfg, jrows, primary, sample, arch_cn,
-                            modality, a.include_end_religation)
-        for n in arch["notes"]:
-            if "does not appear in the junction table" in n and n not in caveats:
-                caveats.append(n)
-        detected = s.get("detected_loci")
-        if detected is None:
-            detected = cfg["mappings"][primary].get("detected_loci")
-        result["samples"][sample] = {
-            "genome_coverage": round(C, 2),
-            "baseline_depth": round(B, 2),
-            "baseline_source": ("genome-median per-base depth" if use_median
-                                else "read count"),
-            "baseline_note": baseline_note,
-            "solve": sol,
-            "depths": sol["depths"],
-            "copies_per_haploid": {n: (round(v, 3) if v is not None else None)
-                                   for n, v in copies.items()},
-            "copies_per_cell": {n: (round(v * float(cfg.get("ploidy", 2)), 3)
-                                    if v is not None else None)
-                                for n, v in copies.items()},
-            "architecture": arch,
-            "detected_loci": detected,
-            "reconciliation": reconcile(arch["implied_sites"], detected),
-            "flank_detection": flank_detection(cfg, C, arch["flank_reads"],
-                                               arch["implied_sites"], anchors),
-            "calibration": calibrate(cfg, jrows, C, sample, anchors),
-        }
+    for sample in cfg["samples"]:
+        measured, sample_caveats = measure_sample(
+            args, cfg, ident, jrows, sample, primary, modality, trim, policy,
+            anchors)
+        result["samples"][sample] = measured
+        caveats += [c for c in sample_caveats if c not in caveats]
 
     result["caveats"] = caveats
-    checks = stage_checks(Checks("copy_number", a.accept), result,
+    checks = stage_checks(Checks("copy_number", args.accept), result,
                           skipped_samples)
     result["checks"] = checks.as_list()
-    md = render(cfg, result)
-    if a.md:
-        with open(a.md, "w", encoding="utf-8") as fh:
-            fh.write(md)
-    if a.json:
-        with open(a.json, "w", encoding="utf-8") as fh:
-            json.dump(result, fh, indent=2)
-    if not a.md and not a.json:
-        print(md)
-
-    for c in caveats:
-        print("  CAVEAT: %s" % c, file=sys.stderr)
-    for s, d in result["samples"].items():
-        parts = " | ".join("%s %s" % (n, v) for n, v in
-                           d["copies_per_haploid"].items())
-        print("%s: genome %.1fx | %s | route: %s"
-              % (s, d["genome_coverage"], parts, d["solve"]["method"]),
-              file=sys.stderr)
-        ar = d["architecture"]
-        print("    copies/site %s -> %s sites implied | %s"
-              % (ar["copies_per_site"], ar["implied_sites"],
-                 d["reconciliation"]["verdict"].split(":")[0]), file=sys.stderr)
+    write_outputs(args, cfg, result)
+    report_stderr(result, caveats)
     if run is not None:
         run.record("copy_number", {
-            "json": run.relative(a.json), "md": run.relative(a.md),
+            "json": run.relative(args.json), "md": run.relative(args.md),
             "primary_mapping": primary, "modality": modality,
             "copies_per_haploid": {s: d["copies_per_haploid"]
                                    for s, d in result["samples"].items()},
             "copies_per_site": copies_per_site_summary(result),
             "checks": checks.as_list()})
-    return checks.finish(a.strict)
+    return checks.finish(args.strict)
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return run_stage(args)
+    except InputError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

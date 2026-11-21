@@ -113,6 +113,11 @@ expect_exit "chr-style names fit several assemblies: stop, never guess" 3 inf2.l
   HR --contig chr6:1000000 --contig chr12:1000000 --no-annotation --out-dir o2 --strict
 assert_has "the stop names the candidates" inf2.log "host_species.*human .*mouse"
 assert_has "the stop says to ask the user" inf2.log "ask the user"
+expect_exit "--accept host_species is refused: still a stop" 3 inf2a.log \
+  HR --contig chr6:1000000 --contig chr12:1000000 --no-annotation --out-dir o2a \
+  --strict --accept host_species
+assert_has "the refusal is said out loud" inf2a.log "accept host_species refused"
+assert_lacks "never marked accepted" inf2a.log "CHECK ACCEPTED \[host_species\]"
 expect_exit "a cell-line hint settles it" 0 inf3.log \
   HR --contig chr6:1000000 --contig chr12:1000000 --cell-line HEK-293T \
   --no-annotation --out-dir o3 --strict

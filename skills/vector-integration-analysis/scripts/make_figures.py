@@ -53,6 +53,12 @@ import sys
 from typing import Dict, List, Optional, Sequence, Tuple
 from xml.sax.saxutils import escape
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from copy_number import trim_from_config  # noqa: E402
+from via_common import parse_kv_pairs  # noqa: E402
+from via_run import (WARN, Checks, InputError, RunError,  # noqa: E402
+                     copy_number_config, load_run)
+
 # --------------------------------------------------------------------------
 # palette: categorical slots in fixed order, light and dark steps of the same
 # hues. Colour follows the construct (identity.json order), never its rank.
@@ -282,6 +288,24 @@ def legend_row(svg: Svg, x: float, y: float, items: List[Tuple[str, str]],
 def load_json(path: str) -> Optional[Dict]:
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def read_input(path: str, what: str, reader):
+    """Read one figure input.
+
+    A file that does not exist yet is a missing input: say so and return None,
+    and the figures that need it are skipped. A file that exists but cannot
+    be parsed is an unreadable input, which is exit status 2 like every other
+    stage -- skipping would hide a broken file behind a "not generated" note.
+    """
+    if not os.path.exists(path):
+        print("  warning: %s %s not found; the figures that need it are "
+              "skipped" % (what, path))
+        return None
+    try:
+        return reader(path)
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        raise InputError("%s %s unreadable (%s)" % (what, path, e))
 
 
 def read_depth(path: str, want: Sequence[str]) -> Tuple[Optional[Dict[int, float]], str]:
@@ -1193,17 +1217,6 @@ def fill_report(src: str, dst: str, manifest: Dict, fig_dir: str) -> Tuple[int, 
 # main
 # --------------------------------------------------------------------------
 
-def parse_kv(items: Sequence[str], what: str) -> List[Tuple[str, str]]:
-    out = []
-    for it in items:
-        if "=" in it:
-            k, v = it.split("=", 1)
-            out.append((k.strip(), v.strip()))
-        else:
-            out.append(("", it.strip()))
-    return out
-
-
 def discover_depth(d: str, constructs: Sequence[str]) -> Dict[str, Dict[str, str]]:
     """depth_<sample>_<construct>.txt, depth_<construct>_<sample>.txt or
     depth_<construct>.txt (single sample) in a directory."""
@@ -1228,13 +1241,10 @@ def apply_run(a: argparse.Namespace) -> Optional[Tuple[Dict, str]]:
     built from the manifest when no --config was given."""
     if not a.run:
         return None
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from via_run import RunError, copy_number_config, load_run
     try:
         run = load_run(a.run)
     except RunError as e:
-        print("  warning: %s" % e)
-        return None
+        raise InputError("run manifest: %s" % e)
     st = lambda name, key: (run.resolve(run.stage(name)[key])  # noqa: E731
                             if run.stage(name).get(key) else None)
     a.out = a.out or os.path.join(run.base, "figures")
@@ -1253,7 +1263,7 @@ def apply_run(a: argparse.Namespace) -> Optional[Tuple[Dict, str]]:
         return None
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def draw(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         description="Draw the report's standard figures (SVG) from the pipeline "
                     "outputs, and fill [[FIG:...]] placeholders in a report.")
@@ -1314,29 +1324,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     ident = None
     if a.identity:
-        try:
-            ident = load_json(a.identity)
-        except (OSError, ValueError) as e:
-            print("  warning: identity map unreadable (%s)" % e)
+        ident = read_input(a.identity, "identity map", load_json)
     order: List[str] = list((ident or {}).get("construct_order")
                             or (ident or {}).get("constructs", {}).keys())
 
     cfg, cfg_dir = run_cfg if run_cfg else (None, "")
     if a.config:
-        try:
-            cfg = load_json(a.config)
-            cfg_dir = os.path.dirname(os.path.abspath(a.config))
-        except (OSError, ValueError) as e:
-            print("  warning: config unreadable (%s)" % e)
+        cfg = read_input(a.config, "config", load_json)
+        cfg_dir = os.path.dirname(os.path.abspath(a.config))
 
     cns: List[Tuple[str, Dict]] = []
-    for lab, path in parse_kv(a.copy_number, "copy-number"):
-        try:
-            d = load_json(path)
-        except (OSError, ValueError) as e:
-            skip("copy_number", "copy-number JSON %s unreadable (%s)" % (path, e))
+    for lab, path in parse_kv_pairs(a.copy_number, "--copy-number",
+                                    require_key=False):
+        if not os.path.exists(path):
+            skip("copy_number", "copy-number JSON %s not found" % path)
             continue
-        cns.append((lab or cn_label(path, d, [l for l, _ in cns]), d))
+        d = read_input(path, "copy-number JSON", load_json)
+        if d is None:
+            continue
+        cns.append((lab or cn_label(path, d, [x for x, _ in cns]), d))
     for _, d in cns:
         for s in (d.get("samples") or {}).values():
             for c in (s.get("copies_per_haploid") or {}):
@@ -1345,16 +1351,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     summary = None
     if a.site_summary:
-        try:
-            summary = load_json(a.site_summary)
-        except (OSError, ValueError) as e:
-            print("  warning: site summary unreadable (%s)" % e)
+        summary = read_input(a.site_summary, "site summary", load_json)
     called: Optional[List[Dict[str, str]]] = None
     if a.called:
-        try:
-            called = read_tsv(a.called)
-        except OSError as e:
-            print("  warning: called-site table unreadable (%s)" % e)
+        called = read_input(a.called, "called-site table", read_tsv)
     if summary:
         for c in summary.get("mappings") or []:
             if c not in order:
@@ -1383,7 +1383,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     single = None
     if cns and len((cns[0][1].get("samples") or {})) == 1:
         single = next(iter(cns[0][1]["samples"]))
-    for k, p in parse_kv(a.depth, "depth"):
+    for k, p in parse_kv_pairs(a.depth, "--depth", require_key=False):
         if ":" in k:
             s, c = k.split(":", 1)
         else:
@@ -1403,15 +1403,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             b = sd.get("baseline_depth") or sd.get("genome_coverage")
             if b:
                 baselines[s] = float(b)
-    for s, v in parse_kv(a.baseline, "baseline"):
+    for s, v in parse_kv_pairs(a.baseline, "--baseline", require_key=False):
         try:
             baselines[s or (single or "sample")] = float(v)
         except ValueError:
-            print("  warning: --baseline %s=%s is not a number" % (s, v))
+            raise InputError("--baseline %s=%s is not a number" % (s, v))
 
     trim, policy = 150, "trim_boundaries"
     if cfg:
-        trim = int(cfg.get("trim_boundaries") or cfg.get("read_length") or trim)
+        trim, _ = trim_from_config(cfg, trim)
     if cns:
         t = cns[0][1].get("trim") or {}
         if t.get("trim_boundaries") is not None:
@@ -1509,14 +1509,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if unedited:
             cons = sorted({f["construct"] for f in manifest.get("figures", [])
                            if f.get("kind") == "coverage" and f.get("construct")})
-            print("WARNING: %d placeholder(s) in %s still hold a template "
-                  "name and were not filled: %s. Replace the <...> part with "
-                  "a construct name%s and rerun --fill."
-                  % (len(unedited), a.fill,
-                     ", ".join("[[FIG:%s]]" % k for k in unedited),
-                     " (coverage figures exist for: %s)" % ", ".join(cons)
-                     if cons else ""), file=sys.stderr)
+            checks = Checks("make_figures")
+            checks.add("figure_placeholders", WARN,
+                       "%d placeholder(s) in %s still hold a template name "
+                       "and were not filled: %s. Replace the <...> part with "
+                       "a construct name%s and rerun --fill."
+                       % (len(unedited), a.fill,
+                          ", ".join("[[FIG:%s]]" % k for k in unedited),
+                          " (coverage figures exist for: %s)" % ", ".join(cons)
+                          if cons else ""))
+            checks.finish(strict=False)
     return 0
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    try:
+        return draw(argv)
+    except InputError as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

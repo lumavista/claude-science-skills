@@ -53,7 +53,7 @@ cp assets/run.example.json run.json      # fill in every value
 
 # 1. which parts of each construct are attributable, and where will
 #    cross-mapping artefacts appear?
-python scripts/construct_identity.py pAlpha.gb pBeta.gb pGamma.gb --run run.json
+python scripts/construct_identity.py pAlpha.gb pBeta.gb pGamma.gb --run run.json --strict
 
 # 2. classify junctions and fingerprint the delivery, per mapped reference
 python scripts/classify_junctions.py --run run.json --mapping pAlpha --strict
@@ -84,10 +84,15 @@ per construct per sample, a genome-wide integration-site overview, copy number
 with the shared-block closure, and the site-count bound per construct. Each is
 driven only by the standard outputs, so it works for any genome and any number
 of constructs. A figure whose input is missing is skipped with a note, not a
-failure.
+failure; an input that exists but cannot be parsed is exit status 2.
 
-Every flag each stage accepts still works, and still means what it did; the
-manifest only removes the need to pass them. `--help` on any script lists them.
+Every flag each stage accepts still works; the manifest only removes the need
+to pass them. `--help` on any script lists them. The exceptions are
+`copy_number.py`'s deprecated trim flags, which are still accepted but print a
+`DEPRECATED:` line when used: `--edge-trim` is an alias of `--trim-boundaries`,
+`--trim-mode` is superseded by the trim_boundaries policy (`contig-end` runs as
+a legacy policy), and `--min-class-bp` is **ignored**, since no class is
+dropped on size any more.
 
 ## One file states the run; the exit status says whether to continue
 
@@ -126,9 +131,12 @@ was listed twice, once under each construct.
 - **Collapse.** A junction reported by two mapping runs is one event. Support
   is combined as the per-sample maximum, never summed — the runs report the
   same reads.
-- **Retain.** Support ≥ `--min-reads` (5) in ≥ `--min-samples` (2)
-  independently prepared samples. The rest is reported as the single-read tail,
-  not quietly dropped and not counted.
+  Stage 2's locus table is already a union over samples, with each sample's
+  support counted over both flanks, so a site present in only one sample
+  reaches this stage.
+- **Retain.** Total support ≥ `--min-reads` (5), summed over samples, and
+  presence in ≥ `--min-samples` (2) independently prepared samples. The rest is
+  reported as the single-read tail, not quietly dropped and not counted.
 - **Attribute, by strict priority.** Unique sequence → `certain`. Else exactly
   one construct's declared vector end → `inferred`. Else the copy-number
   ceiling, `ceil(copies × ploidy ÷ min_copies_per_site)`, as a **hard cap**.

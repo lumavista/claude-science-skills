@@ -41,12 +41,14 @@ import math
 import os
 import sys
 from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from via_common import (MODALITIES, Junction, NameMatcher,  # noqa: E402
                         fmt_warnings, load_json, natural_key, parse_clip_map,
-                        parse_column_spec, read_junction_table, write_loci)
+                        parse_column_spec, parse_int_list, parse_kv,
+                        read_junction_table, write_loci)
 from via_run import (FAIL, PASS, WARN, Checks, RunError,  # noqa: E402
                      add_check_arguments, load_run)
 
@@ -228,9 +230,66 @@ def fingerprint_agrees(modality: str, fp: Dict) -> Optional[bool]:
 # locus assembly
 # --------------------------------------------------------------------------
 
-def build_loci(js: Sequence[Junction], pair_window: int,
+@dataclass
+class Site:
+    """One host-vector junction position, with its support in every sample.
+
+    `rep` is the junction that founded the site -- the reference sample's
+    where it has one -- and supplies the coordinates and vector annotation.
+    """
+    rep: Junction
+    support: Dict[str, int] = field(default_factory=dict)
+
+    @property
+    def host_pos(self) -> int:
+        return self.rep.host_pos
+
+    @property
+    def host_clip(self) -> str:
+        return self.rep.host_clip
+
+
+def merge_samples(js: Sequence[Junction], samples: Sequence[str],
+                  tol: int) -> List[Site]:
+    """Pool every sample's genuine host-vector junctions into sites.
+
+    The called set is a union over samples: a junction seen only in a
+    non-reference sample is a site like any other. Samples are taken in
+    `samples` order (reference first), and a junction joins an existing site
+    when it has the same contig and clip side, lies within `tol` bases of it
+    on both the host and the vector side, and that site has no junction from
+    this sample yet -- so a 1-bp caller disagreement between samples does not
+    split one insertion into two, while junctions within one sample are never
+    merged with each other.
+    """
+    order = {s: i for i, s in enumerate(samples)}
+    gen = sorted((j for j in js if j.kind == "host-vector" and not j.artefact),
+                 key=lambda j: (order[j.sample], -j.support))
+    by_key: Dict[Tuple[str, str], List[Site]] = defaultdict(list)
+    sites: List[Site] = []
+    for j in gen:
+        candidates = by_key[(j.host_contig, j.host_clip)]
+        best: Optional[Site] = None
+        for site in candidates:
+            if j.sample in site.support:
+                continue
+            dh = abs(site.rep.host_pos - j.host_pos)
+            dv = abs(site.rep.vector_pos - j.vector_pos)
+            if dh <= tol and dv <= tol and (
+                    best is None or dh + dv < abs(best.rep.host_pos - j.host_pos)
+                    + abs(best.rep.vector_pos - j.vector_pos)):
+                best = site
+        if best is None:
+            best = Site(rep=j)
+            candidates.append(best)
+            sites.append(best)
+        best.support[j.sample] = j.support
+    return sites
+
+
+def build_loci(sites: Sequence[Site], pair_window: int,
                clip_usable: bool) -> List[Dict]:
-    """Group host junctions into loci and pair flanks.
+    """Group sites into loci and pair flanks.
 
     A complete insertion gives an `R` junction (reference runs up to it, then
     insert: the LEFT flank) and an `L` junction (insert, then reference
@@ -239,20 +298,22 @@ def build_loci(js: Sequence[Junction], pair_window: int,
     two right flanks and must not be paired. Getting this wrong inflates the
     site count.
 
+    A locus's support is per sample and counts both flanks, so every sample's
+    support is measured the same way.
+
     Without a usable clip side nothing can be paired, so every junction
     becomes its own single-flank locus. That is a real loss of a consistency
     check, not a silent degradation -- the caller reports it.
     """
-    gen = [j for j in js if j.kind == "host-vector" and not j.artefact]
-    by_contig: Dict[str, List[Junction]] = defaultdict(list)
-    for j in gen:
-        by_contig[j.host_contig].append(j)
+    by_contig: Dict[str, List[Site]] = defaultdict(list)
+    for site in sites:
+        by_contig[site.rep.host_contig].append(site)
 
     loci: List[Dict] = []
     for contig in sorted(by_contig, key=natural_key):
-        items = sorted(by_contig[contig], key=lambda j: j.host_pos)
+        items = sorted(by_contig[contig], key=lambda x: x.host_pos)
         used: set = set()
-        for i, j in enumerate(items):
+        for i, site in enumerate(items):
             if i in used:
                 continue
             partner_i = None
@@ -260,31 +321,36 @@ def build_loci(js: Sequence[Junction], pair_window: int,
                 for n in range(i + 1, len(items)):
                     if n in used:
                         continue
-                    if items[n].host_pos - j.host_pos > pair_window:
+                    if items[n].host_pos - site.host_pos > pair_window:
                         break
-                    if {j.host_clip, items[n].host_clip} == {"R", "L"}:
+                    if {site.host_clip, items[n].host_clip} == {"R", "L"}:
                         partner_i = n
                         break
             if partner_i is not None:
                 other = items[partner_i]
                 used.update({i, partner_i})
-                left = j if j.host_clip == "R" else other
-                right = other if left is j else j
+                left = site if site.host_clip == "R" else other
+                right = other if left is site else site
+                support: Dict[str, int] = defaultdict(int)
+                for flank in (left, right):
+                    for s, n_reads in flank.support.items():
+                        support[s] += n_reads
                 loci.append({
                     "contig": contig,
                     "start": left.host_pos, "end": right.host_pos,
-                    "flanks": 2, "rep": left, "left": left, "right": right,
+                    "flanks": 2, "rep": left.rep,
+                    "left": left.rep, "right": right.rep,
                     "footprint": right.host_pos - left.host_pos - 1,
-                    "support": left.support + right.support,
+                    "support": dict(support),
                 })
             else:
                 used.add(i)
                 loci.append({
-                    "contig": contig, "start": j.host_pos, "end": j.host_pos,
-                    "flanks": 1, "rep": j,
-                    "left": j if j.host_clip == "R" else None,
-                    "right": j if j.host_clip == "L" else None,
-                    "footprint": None, "support": j.support,
+                    "contig": contig, "start": site.host_pos,
+                    "end": site.host_pos, "flanks": 1, "rep": site.rep,
+                    "left": site.rep if site.host_clip == "R" else None,
+                    "right": site.rep if site.host_clip == "L" else None,
+                    "footprint": None, "support": dict(site.support),
                 })
     return loci
 
@@ -338,26 +404,6 @@ def ratio_ci(a: int, b: int, norm_factor: float = 1.0
     return r, r * math.exp(-1.96 * se), r * math.exp(1.96 * se)
 
 
-def cross_sample(js: Sequence[Junction], ref_sample: str,
-                 norms: Dict[str, float]) -> Dict[Tuple, Dict]:
-    idx: Dict[Tuple, Dict[str, int]] = defaultdict(dict)
-    for j in js:
-        if j.kind != "host-vector":
-            continue
-        idx[(j.host_contig, j.host_pos, j.vector_pos)][j.sample] = j.support
-    out: Dict[Tuple, Dict] = {}
-    for k, d in idx.items():
-        a = d.get(ref_sample, 0)
-        per = {}
-        for s, b in d.items():
-            if s == ref_sample:
-                continue
-            r, lo, hi = ratio_ci(a, b, norms.get(s, 1.0))
-            per[s] = {"support": b, "ratio": r, "lo": lo, "hi": hi}
-        out[k] = {"ref_support": a, "others": per}
-    return out
-
-
 def evidence_tier(membership: str) -> str:
     """Tier a locus by how many constructs carry the vector base it sits on.
 
@@ -370,27 +416,32 @@ def evidence_tier(membership: str) -> str:
             else "inferred" if carriers else "unknown")
 
 
-def locus_rows(loci: Sequence[Dict], xs: Dict[Tuple, Dict], ref_sample: str,
-               samples: Sequence[str]) -> List[Dict[str, object]]:
-    """The loci as rows for `via_common.write_loci`, in contig order."""
+def locus_rows(loci: Sequence[Dict], ref_sample: str, samples: Sequence[str],
+               norms: Dict[str, float]) -> List[Dict[str, object]]:
+    """The loci as rows for `via_common.write_loci`, in contig order, with
+    each other sample's support ratio against the reference sample."""
     rows: List[Dict[str, object]] = []
-    for x in sorted(loci, key=lambda L: (natural_key(L["contig"]), L["start"])):
-        j = x["rep"]
+    for locus in sorted(loci, key=lambda x: (natural_key(x["contig"]), x["start"])):
+        rep = locus["rep"]
+        support = locus["support"]
+        ref_support = support.get(ref_sample, 0)
         row: Dict[str, object] = {
-            "contig": x["contig"], "start": x["start"], "end": x["end"],
-            "flanks": x["flanks"], "footprint": x["footprint"],
-            "vector_pos": j.vector_pos, "region": j.region,
-            "membership": j.membership, "feature": j.feature,
-            "evidence_tier": evidence_tier(j.membership),
-            "support_" + ref_sample: x["support"]}
-        rec = xs.get((j.host_contig, j.host_pos, j.vector_pos)) or {}
+            "contig": locus["contig"], "start": locus["start"],
+            "end": locus["end"], "flanks": locus["flanks"],
+            "footprint": locus["footprint"],
+            "vector_pos": rep.vector_pos, "region": rep.region,
+            "membership": rep.membership, "feature": rep.feature,
+            "evidence_tier": evidence_tier(rep.membership),
+            "support_" + ref_sample: ref_support}
         for s in samples:
-            o = rec.get("others", {}).get(s)
-            if s != ref_sample and o and o["support"]:
-                row.update({"support_" + s: o["support"],
-                            "ratio_" + s: round(o["ratio"], 2),
-                            "lo_" + s: round(o["lo"], 2),
-                            "hi_" + s: round(o["hi"], 2)})
+            n_reads = support.get(s, 0)
+            if s == ref_sample or not n_reads:
+                continue
+            row["support_" + s] = n_reads
+            r, lo, hi = ratio_ci(ref_support, n_reads, norms.get(s, 1.0))
+            if not math.isnan(r):
+                row.update({"ratio_" + s: round(r, 2), "lo_" + s: round(lo, 2),
+                            "hi_" + s: round(hi, 2)})
         rows.append(row)
     return rows
 
@@ -465,6 +516,7 @@ def stage_checks(checks: Checks, mapping: str, modality: str,
 # --------------------------------------------------------------------------
 
 def render_md(mapping: str, modality: str, samples: Sequence[str],
+              ref_sample: str,
               infos: Dict[str, Dict], fp: Dict, foot: Dict,
               loci: Sequence[Dict], counts: Dict, warnings: Sequence[str],
               checks: Optional[Checks] = None) -> str:
@@ -509,7 +561,7 @@ def render_md(mapping: str, modality: str, samples: Sequence[str],
                         "yes" if t["at_declared_end"] else "no"))
         L.append("")
 
-    L += ["## Junction census (%s)" % samples[0], "",
+    L += ["## Junction census (%s)" % ref_sample, "",
           "| Class | junctions | flagged artefact |", "|---|---|---|"]
     for kind in ("host-vector", "vector-vector", "vector-unmapped", "host-host"):
         L.append("| %s | %d | %d |" % (kind, counts["kind"].get(kind, 0),
@@ -600,6 +652,11 @@ def main(argv=None) -> int:
                          "insertion (default 500). Raise it only if you expect "
                          "a large target-site deletion; a wide window pairs "
                          "unrelated junctions and deflates the site count.")
+    ap.add_argument("--sample-tol", type=int, default=3,
+                    help="bases within which junctions from different samples "
+                         "(same contig and clip side, on both the host and "
+                         "the vector side) count as one site (default 3). "
+                         "Junctions within one sample are never merged.")
     ap.add_argument("--boundary-tol", type=int, default=3)
     ap.add_argument("--long-filler", type=int, default=0,
                     help="filler at or above this is a cross-mapping "
@@ -676,35 +733,28 @@ def main(argv=None) -> int:
               % (a.mapping, ", ".join(ident["constructs"])), file=sys.stderr)
         return 2
 
-    ends = []
-    for x in a.ends.split(","):
-        x = x.strip()
-        if not x:
-            continue
-        if not x.lstrip("-").isdigit():
-            print("error: --vector-ends takes integers, got %r" % x, file=sys.stderr)
-            return 2
-        ends.append(int(x))
+    try:
+        ends = parse_int_list(a.ends, "--vector-ends")
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
 
     long_filler = a.long_filler or max(40, a.read_length - 50)
 
-    aliases: Dict[str, str] = {}
-    for item in a.construct_alias:
-        k, _, v = item.partition("=")
-        if not v:
-            print("error: --construct-alias needs CONSTRUCT=TABLENAME, got %r"
-                  % item, file=sys.stderr)
-            return 2
-        aliases[k.strip()] = v.strip()
-
-    norms: Dict[str, float] = {}
-    for item in a.norm:
-        k, _, v = item.partition("=")
-        try:
-            norms[k.strip()] = float(v)
-        except ValueError:
-            print("error: --norm needs SAMPLE=FACTOR, got %r" % item, file=sys.stderr)
-            return 2
+    try:
+        aliases = parse_kv(a.construct_alias, "--construct-alias")
+        if not all(aliases.values()):
+            raise ValueError("--construct-alias needs CONSTRUCT=TABLENAME")
+        norms: Dict[str, float] = {}
+        for k, v in parse_kv(a.norm, "--norm").items():
+            try:
+                norms[k] = float(v)
+            except ValueError:
+                raise ValueError("--norm needs SAMPLE=FACTOR, got %r=%r"
+                                 % (k, v))
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
 
     try:
         colspec = parse_column_spec(a.columns) if a.columns else {}
@@ -779,10 +829,11 @@ def main(argv=None) -> int:
         return 2
 
     primary = [j for j in all_js if j.sample == ref_sample]
+    sample_order = [ref_sample] + [s for s in samples if s != ref_sample]
     fp = fingerprint(primary, ends, a.end_tol)
-    loci = build_loci(primary, a.pair_window, clip_usable)
+    sites = merge_samples(all_js, sample_order, a.sample_tol)
+    loci = build_loci(sites, a.pair_window, clip_usable)
     foot = check_footprints(loci, a.modality)
-    xs = cross_sample(all_js, ref_sample, norms) if len(samples) > 1 else {}
 
     counts = {"kind": defaultdict(int), "artefact_by_kind": defaultdict(int),
               "region": defaultdict(int), "artefact_kinds": {}}
@@ -807,13 +858,13 @@ def main(argv=None) -> int:
                 fh.write("\t".join(str(d[c]) for c in cols) + "\n")
 
     if a.out_loci:
-        write_loci(a.out_loci, [ref_sample] + [s for s in samples
-                                               if s != ref_sample],
-                   locus_rows(loci, xs, ref_sample, samples))
+        write_loci(a.out_loci, sample_order,
+                   locus_rows(loci, ref_sample, samples, norms))
 
     checks = stage_checks(Checks("classify_junctions", a.accept), a.mapping,
                           a.modality, ends, ident, fp, foot, infos)
-    md = render_md(a.mapping, a.modality, samples, infos, fp, foot, loci,
+    md = render_md(a.mapping, a.modality, samples, ref_sample, infos, fp,
+                   foot, loci,
                    counts, warnings, checks)
     if a.md:
         with open(a.md, "w", encoding="utf-8") as fh:
