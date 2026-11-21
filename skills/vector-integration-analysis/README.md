@@ -208,7 +208,9 @@ Python 3.8+. No third-party packages.
 tests/run_tests.sh
 ```
 
-231 assertions over synthetic fixtures. Every sequence used in testing is
+291 assertions over synthetic fixtures, including the host-stage suite
+(`tests/test_host.sh`), which `run_tests.sh` runs as its last step and which
+can also be run on its own. Every sequence used in testing is
 pseudo-random and generated at run time — **no real vector, plasmid or genome
 sequence is stored in this repository.**
 

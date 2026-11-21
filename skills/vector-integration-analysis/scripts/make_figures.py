@@ -1505,6 +1505,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 2
         print("report: %d figure link(s) placed in %s%s"
               % (n, dst, ("; not generated: " + ", ".join(missing)) if missing else ""))
+        unedited = [k for k in missing if "<" in k]
+        if unedited:
+            cons = sorted({f["construct"] for f in manifest.get("figures", [])
+                           if f.get("kind") == "coverage" and f.get("construct")})
+            print("WARNING: %d placeholder(s) in %s still hold a template "
+                  "name and were not filled: %s. Replace the <...> part with "
+                  "a construct name%s and rerun --fill."
+                  % (len(unedited), a.fill,
+                     ", ".join("[[FIG:%s]]" % k for k in unedited),
+                     " (coverage figures exist for: %s)" % ", ".join(cons)
+                     if cons else ""), file=sys.stderr)
     return 0
 
 

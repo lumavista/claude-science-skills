@@ -854,14 +854,18 @@ def ceiling_divisor_finding(a: argparse.Namespace, measured: Optional[float],
             % (measured, measured))
 
 
-#: a construct holding this fraction of its ceiling or less has a shortfall
+#: `references/quantification.md` section 7: agreement within ~25% means the
+#: called sites account for the DNA, so a shortfall needs fewer than this
+#: fraction of the implied sites attributed...
 SHORTFALL_FRACTION = 0.75
-#: ...and at least this many sites unaccounted for, so small counts are quiet
-SHORTFALL_SITES = 2
+#: ...and at least one whole site's worth of DNA unaccounted for. Measured
+#: against the implied count before it is rounded up to the ceiling, so a
+#: copy number just over an integer does not manufacture a missing site.
+SHORTFALL_SITES = 1.0
 
 
-def site_accounting(per_construct: Dict[str, Dict], unresolved: int
-                    ) -> Tuple[List[Dict], Optional[str]]:
+def site_accounting(per_construct: Dict[str, Dict], unresolved: int,
+                    sites_per_copy: float) -> Tuple[List[Dict], Optional[str]]:
     """Do the called sites account for the DNA each construct was measured at?
 
     The ceiling IS the implied site count -- ceil(copies x ploidy /
@@ -869,11 +873,17 @@ def site_accounting(per_construct: Dict[str, Dict], unresolved: int
     sites against the ceiling, per construct. Done here because it is the
     step most easily skipped by hand, and because doing it for the primary
     construct alone misses a shortfall on any other one.
+
+    `sites_per_copy` is ploidy / min_copies_per_site, the factor the ceiling
+    was built with. The shortfall test uses copies x sites_per_copy unrounded:
+    the ceiling rounds up, and a rounded-up site is not missing DNA.
     """
     rows: List[Dict] = []
     short: List[str] = []
     for n, d in per_construct.items():
         cap, got = d["ceiling"], d["attributed"]
+        implied = (None if cap is None else
+                   max(0.0, d["copies_per_haploid"]) * sites_per_copy)
         row = {"construct": n, "copies_per_haploid": d["copies_per_haploid"],
                "implied_sites": cap, "attributed": got,
                "unaccounted": None if cap is None else cap - got,
@@ -884,7 +894,8 @@ def site_accounting(per_construct: Dict[str, Dict], unresolved: int
         elif got > cap:
             row["verdict"] = ("more sites than the copy number implies; see "
                               "the ceiling contradiction above")
-        elif cap - got >= SHORTFALL_SITES and got <= SHORTFALL_FRACTION * cap:
+        elif (implied - got >= SHORTFALL_SITES
+              and got < SHORTFALL_FRACTION * implied):
             row["verdict"] = ("SHORTFALL: %d of the %d sites the measured DNA "
                               "implies are not accounted for"
                               % (cap - got, cap))
@@ -1148,7 +1159,8 @@ def main(argv=None) -> int:
     constructs = [n for n in known if n in tables or copies.get(n) is not None]
     per_construct = site_counts(called, constructs, copies, caps)
     n_unresolved = sum(1 for L in called if not L["construct"])
-    accounting, shortfall = site_accounting(per_construct, n_unresolved)
+    accounting, shortfall = site_accounting(
+        per_construct, n_unresolved, ploidy / a.min_copies_per_site)
     if shortfall:
         caveats.append(shortfall)
     checks = stage_checks(Checks("reconcile_sites", a.accept), found,

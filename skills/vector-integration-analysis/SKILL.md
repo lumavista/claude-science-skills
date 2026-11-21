@@ -360,6 +360,10 @@ attributed:
 ceil(copies per haploid × ploidy ÷ copies per site)   vs   sites attributed
 ```
 
+The script calls a shortfall when at least one whole site's worth of DNA is
+unaccounted for and fewer than 75% of the implied sites were attributed, both
+measured before the ceiling rounds up.
+
 A shortfall means missing sites — flanks lost to repeats are the usual reason —
 or an extrachromosomal pool, or more copies per site than the divisor assumes,
 which is the first thing to check on a concatemer line. An excess over the
@@ -533,4 +537,5 @@ stderr carries the specifics; this is the standing meaning.
 
 `assets/run.example.json` is the run manifest template, with every field
 documented in place. Scripts need Python 3.8+ and no third-party packages.
-`tests/run_tests.sh` exercises every path against synthetic fixtures.
+`tests/run_tests.sh` exercises every path against synthetic fixtures, and runs
+`tests/test_host.sh` (the host stage, offline) as its last step.

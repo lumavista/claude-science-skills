@@ -1098,6 +1098,68 @@ open('report_filled_body.md','w').write(t)"
 assert_lacks "no figure slot left as a placeholder in the report body" \
   report_filled_body.md "\[\[FIG:"
 
+# the template used unedited: the slot is explained in the report AND on stderr
+"$PY" "$SCRIPTS/make_figures.py" --out figs --identity identity_concat.json \
+  --config cfg_recon.json --copy-number cn_recon.json \
+  --called called.tsv --site-summary site_summary.json --fai contigs.fai \
+  --fill "$HERE/../assets/report_template.md" --fill-out report_raw.md \
+  >fill_raw.out 2>fill_raw.err \
+  && ok "--fill on an unedited template still exits 0" || bad "--fill unedited"
+assert_has "unedited placeholder warned about on stderr, by name" fill_raw.err \
+  "WARNING.*\[\[FIG:coverage_<construct A>\]\]"
+assert_has "the warning lists the constructs that have coverage figures" \
+  fill_raw.err "coverage figures exist for: pDelta, pEpsilon"
+assert_lacks "an edited template draws no such warning" fill.log "WARNING"
+
+echo
+echo "== Final stage: do the called sites account for the DNA? =="
+acct() { rs --loci pDelta=loci_recon_pDelta.tsv --loci pEpsilon=loci_recon_pEpsilon.tsv \
+  --ploidy 2 --vector-ends pDelta=1200 --vector-ends pEpsilon=3000 "$@"; }
+# 0.55 copies x ploidy 2 = 1.1 sites implied, 1 called: the ceiling rounds up
+# to 2, and that rounded-up site is not missing DNA
+acct --copies pDelta=0.55 --copies pEpsilon=3.5 --md acct_round.md \
+  --summary acct_round.json >acct_round.log 2>&1 \
+  && ok "accounting ran" || { bad "accounting"; cat acct_round.log; }
+assert_has "a ceiling rounded up past the called sites is not a shortfall" \
+  acct_round.md "pDelta \| 0\.55 \| 2 \| 1 \| 1 \| the called sites account"
+assert_lacks "no shortfall caveat when the DNA is accounted for" acct_round.md \
+  "SITE SHORTFALL"
+acct_status() { "$PY" -c "
+import json; d=json.load(open('$1'))
+print([c['status'] for c in d['checks'] if c['id']=='site_accounting'][0])"; }
+[ "$(acct_status acct_round.json)" = pass ] \
+  && ok "site_accounting check passes" || bad "site_accounting should pass"
+# 1.0 copies x 2 = 2 sites implied, 1 called: half the DNA has no site
+acct --copies pDelta=1.0 --copies pEpsilon=3.5 --md acct_short.md \
+  --summary acct_short.json >acct_short.log 2>&1
+assert_has "one whole site unaccounted for is a shortfall, even at low copy" \
+  acct_short.md "pDelta \| 1\.00 \| 2 \| 1 \| 1 \| SHORTFALL"
+assert_has "the shortfall is on the construct it belongs to, not the other" \
+  acct_short.md "pEpsilon \| 3\.50 \| 7 \| 7 \| 0 \| the called sites account"
+assert_has "shortfall raised as a caveat naming the construct" acct_short.md \
+  "SITE SHORTFALL \(pDelta: 1 of 2\)"
+[ "$(acct_status acct_short.json)" = warn ] \
+  && ok "site_accounting check warns in the JSON" || bad "site_accounting should warn"
+assert_has "shortfall printed as a warning check" acct_short.log \
+  "CHECK WARNING \[site_accounting\]"
+# 4.6 x 2 = 9.2 implied, 7 called: within the ~25% of quantification.md s.7
+acct --copies pDelta=0.55 --copies pEpsilon=4.6 --md acct_tol.md >acct_tol.log 2>&1
+assert_has "agreement within ~25% accounts for the DNA" acct_tol.md \
+  "pEpsilon \| 4\.60 \| 10 \| 7 \| 3 \| the called sites account"
+
+echo
+echo "== Host stage: test_host.sh =="
+bash "$HERE/test_host.sh" >host_suite.log 2>&1; host_rc=$?
+grep -E "FAIL" host_suite.log
+hp="$(sed -n 's/.*passed: \([0-9]*\) .*/\1/p' host_suite.log | tail -1)"
+hf="$(sed -n 's/.*failed: \([0-9]*\).*/\1/p' host_suite.log | tail -1)"
+if [ -n "$hp" ] && [ -n "$hf" ]; then
+  PASS=$((PASS+hp)); FAIL=$((FAIL+hf))
+  echo "  test_host.sh: $hp passed, $hf failed (counted below)"
+else
+  bad "test_host.sh did not report a result (exit $host_rc)"; tail -5 host_suite.log
+fi
+
 echo
 echo "=============================="
 echo " passed: $PASS   failed: $FAIL"
