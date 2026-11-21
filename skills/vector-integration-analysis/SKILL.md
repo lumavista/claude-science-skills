@@ -340,16 +340,19 @@ It does four things, in this order:
 4. **Counts**: per construct a floor of certain + vector-end loci, a bounded
    range up to the ceiling, and the unresolved count stated separately.
 
-Three parameters are decisions, so the script asks rather than choosing:
+Two parameters are decisions, so the script asks rather than choosing, and
+one is taken from the measurement and stated:
 
 - **One sample only** fails the `min_samples` check, because nothing can be
   confirmed in a second library. Rerun with `--min-samples 1` and say in the
   report that no locus had that confirmation.
-- **A concatemer line** raises `ceiling_divisor`: with the default
-  `--min-copies-per-site 1` every ceiling is nominal, since the upper bound
-  becomes the copy number itself. Rerun with the value the warning names, from
-  Stage 3's measured copies per site, to make the ceiling binding — or keep 1
-  deliberately and say so.
+- **The ceiling's divisor** defaults to Stage 3's measured copies per site
+  (the copy-number JSON's `architecture.copies_per_site`), and to 1 when there
+  is no estimate. On a concatemer line that makes the ceiling reflect the
+  arrays; with a divisor of 1 the upper bound is the copy number itself. The
+  estimate is an average over sites, so say in the report that the upper bound
+  rests on it. `--min-copies-per-site N` overrides; passing 1 on a line that
+  measured arrays raises `ceiling_divisor`.
 - **`--cn-margin`** (2.0) sets how far the leading construct must lead on copy
   number before a shared locus goes to it rather than to `unresolved`, so on a
   line whose constructs differ by less than that it decides the split between
@@ -414,7 +417,7 @@ the standard outputs, for any genome and any number of constructs:
 | Figure | Placeholder | From |
 |---|---|---|
 | per-construct coverage track, one per contig per sample: depth, membership blocks shaded unique vs shared and labelled by carrier, trimmed bases, baseline, block means in copies | `[[FIG:coverage_<construct>]]` (all samples) or `[[FIG:coverage_<sample>_<construct>]]` | depth files (via `--config`, `--depth SAMPLE:CONSTRUCT=PATH` or `--depth-dir`), identity.json, the copy-number JSON's baseline and trim |
-| genome overview: every chromosome as a length bar, each called locus a tick coloured by construct and styled by confidence | `[[FIG:genome_overview]]` | the host `.fai` (Stage 2b, or `--fai`), called_sites.tsv |
+| genome overview: every chromosome as a length bar, each called locus a tick coloured by construct and styled by confidence. With a host stage: species and assembly in the title and caption, and each locus labelled with its overlapping (or `near` its nearest) gene. Without one: the bars and ticks alone | `[[FIG:genome_overview]]` | the host `.fai` (Stage 2b, or `--fai`), called_sites.tsv; optionally the host record (Stage 2b via `--run`, or `--host host.json`) and the gene columns `reconcile_sites.py --genes` adds |
 | copy number: bars per construct per sample, one per copy-number JSON (pass two `--copy-number` runs, e.g. two trim policies, to set them side by side), with per-block spread and the shared-block closure deficit | `[[FIG:copy_number]]` | copy_number.py `--json` |
 | architecture: site floor, attributed, ceiling and unresolved per construct, and the copies per site that implies | `[[FIG:architecture]]` | site_summary.json |
 
@@ -485,7 +488,7 @@ stderr carries the specifics; this is the standing meaning.
 | `ploidy` | *(warns only)* ploidy was assumed to be 2, and it scales every ceiling | measuring it and passing `--ploidy` |
 | `vector_ends` | *(warns only)* a construct has no declared ends, so the vector-end tier could not be tested there | putting them in the manifest |
 | `samples_consistent` | *(warns only)* the mapping tables do not carry the same samples, so a locus can look sample-specific | noting which run saw which sample |
-| `ceiling_divisor` | *(warns only)* the ceiling is nominal where Stage 3 measured arrays | rerunning with the `--min-copies-per-site` the message names |
+| `ceiling_divisor` | *(warns only)* the divisor was set to 1 where Stage 3 measured arrays, so the ceiling is nominal | dropping the flag so the measured value applies, or keeping 1 and saying so |
 | `site_accounting` | *(warns only)* a construct's called sites do not account for the copy number measured for it | the shortfall's three candidates above: missing flanks, an extrachromosomal pool, or more copies per site than `--min-copies-per-site` assumes |
 | `sites_called` | *(warns only)* no locus was called | the retention parameters, or the input |
 

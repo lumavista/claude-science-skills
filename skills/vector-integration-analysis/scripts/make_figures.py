@@ -13,7 +13,11 @@ here knows about a particular genome, construct, sample or coordinate:
   genome_overview.svg
       Every host chromosome from a .fai as a length bar (any build, any
       organism -- no cytobands), and each called locus of called_sites.tsv as a
-      tick, coloured by attributed construct and styled by confidence.
+      tick, coloured by attributed construct and styled by confidence. When
+      host_reference.py ran, the title and caption name the species and
+      assembly it settled, and each locus carries the gene reconcile_sites.py
+      annotated it with (overlapping, else nearest). Without either, the
+      figure is the .fai bars and ticks alone.
   copy_number.svg
       Copies per haploid genome per construct per sample, one bar per
       copy_number.py JSON supplied (e.g. two trim policies side by side), with
@@ -93,6 +97,12 @@ def fmt(x: Optional[float], nd: int = 1) -> str:
         return "{:,.0f}".format(x)
     s = ("%." + str(nd) + "f") % x
     return s
+
+
+def fmt_divisor(x: Optional[float]) -> str:
+    """A ceiling divisor: whole when it was declared, fractional when it was
+    measured, and never rounded to a different divisor than was used."""
+    return "%g" % x if isinstance(x, (int, float)) else "n/a"
 
 
 def fmt_bp(n: float) -> str:
@@ -620,11 +630,78 @@ def locus_marker(cx: float, cy: float, conf: str, role: str) -> str:
                                       Svg.paint("surface", "neutral")))
 
 
+def host_label(host: Optional[Dict]) -> str:
+    """"Species, assembly" from a host_reference.py record; "" if it has
+    neither. Nothing is inferred here: only what that stage settled."""
+    if not isinstance(host, dict):
+        return ""
+    # "local files" is host_reference.py's stand-in when the user supplied a
+    # .fai and no assembly was named: not an assembly, so not printed as one
+    return ", ".join(str(host[k]) for k in ("species", "assembly")
+                     if host.get(k) and host[k] != "local files")
+
+
+def gene_context(row: Dict[str, str]) -> Tuple[str, str]:
+    """(label, tooltip) for a called locus from the host-annotation columns
+    reconcile_sites.py --genes appends; ("", "") when the table has none or
+    the locus has no gene context."""
+    gene = (row.get("host_gene") or "").strip()
+    region = (row.get("host_region") or "").strip()
+    if gene:
+        return gene, "%s %s" % (region or "in", gene)
+    near = (row.get("nearest_gene") or "").strip()
+    if not near:
+        return "", ""
+    tip = "%s, nearest gene %s" % (region or "intergenic", near)
+    dist = (row.get("nearest_gene_distance") or "").strip()
+    if dist:
+        try:
+            dist = fmt_bp(float(dist))
+        except ValueError:
+            pass
+        tip += " %s %s" % (dist, (row.get("nearest_gene_side") or "").strip())
+    return "near " + near, tip.strip()
+
+
+def _place_label(x: float, w: float, lanes: Sequence[List[Tuple[float, float]]],
+                 lo: float, hi: float) -> Optional[Tuple[int, float, str]]:
+    """First free slot for a label of width `w` beside a tick at `x`: above
+    the bar then below it, right of the tick then left. Returns (lane, text x,
+    anchor), or None when every slot would overlap something already there."""
+    for lane, used in enumerate(lanes):
+        for a, z, tx, anchor in ((x + 7, x + 7 + w, x + 7, "start"),
+                                 (x - 7 - w, x - 7, x - 7, "end")):
+            if a < lo or z > hi:
+                continue
+            if all(z + 3 <= ua or a - 3 >= uz for ua, uz in used):
+                used.append((a, z))
+                return lane, tx, anchor
+    return None
+
+
+def _gene_label(gene: str, x: float, y: float,
+                lanes: Sequence[List[Tuple[float, float]]], width: float) -> str:
+    """The SVG text for one locus's gene label, or "" when it has no room."""
+    slot = _place_label(x, text_w(gene, 9), lanes, 4, width - 4)
+    if not slot:
+        return ""
+    lane, tx, anchor = slot
+    return ('<text class="gene-label f-text2" x="%.1f" y="%.1f" font-size="9" '
+            'text-anchor="%s" fill="%s">%s</text>'
+            % (tx, y - 7 if lane == 0 else y + 16, anchor, ROLES["text2"][0],
+               escape(gene)))
+
+
 def fig_genome(fai: List[Tuple[str, int]], called: List[Dict[str, str]],
                order: Sequence[str], roles: Dict[str, str], exclude: Sequence[str],
                min_frac: float, max_contigs: int,
-               summary: Optional[Dict]) -> Tuple[Svg, str, List[str]]:
+               summary: Optional[Dict],
+               host_record: Optional[Dict] = None
+               ) -> Tuple[Svg, str, List[str]]:
     notes: List[str] = []
+    where = host_label(host_record)
+    genes = {id(r): gene_context(r) for r in called}
+    labelled = any(lab for lab, _ in genes.values())
     excl = set(exclude)
     host = [(n, l) for n, l in fai if n not in excl]
     if len(host) < len(fai):
@@ -654,14 +731,20 @@ def fig_genome(fai: List[Tuple[str, int]], called: List[Dict[str, str]],
     L = 20 + name_w + 10
     W, R = 980, 90
     PW = W - L - R
-    row = 22
+    row = 32 if labelled else 22     # room for a label lane under each bar
     y0 = 64
     H = y0 + row * max(1, len(shown)) + 140
 
-    svg = Svg(W, H, "genome_overview", "Integration sites across the host genome",
+    svg = Svg(W, H, "genome_overview",
+              "Integration sites across the %s genome" % (where or "host"),
               "Host chromosomes drawn to length from the .fai, with each called "
-              "locus marked by attributed construct and confidence.")
+              "locus marked by attributed construct and confidence%s."
+              % (", and labelled with its overlapping or nearest gene"
+                 if labelled else ""))
     svg.text(20, 22, "Called integration sites", size=15, weight="600")
+    if where:
+        svg.text(20 + text_w("Called integration sites", 15) + 12, 22, where,
+                 size=12, fill="text2", **{"class": "host"})
     n_by = {}
     for r in called:
         n_by[r.get("confidence", "")] = n_by.get(r.get("confidence", ""), 0) + 1
@@ -674,6 +757,7 @@ def fig_genome(fai: List[Tuple[str, int]], called: List[Dict[str, str]],
     for r in called:
         by_contig.setdefault(r.get("contig", ""), []).append(r)
 
+    unlabelled = 0
     for i, (name, ln) in enumerate(shown):
         y = y0 + i * row
         svg.open(**{"class": "chrom", "data_name": name, "data_length": ln})
@@ -682,12 +766,18 @@ def fig_genome(fai: List[Tuple[str, int]], called: List[Dict[str, str]],
         svg.rect(L, y - 4, bw, 8, fill="shared", rx=4,
                  title="%s: %s" % (name, fmt_bp(ln)))
         svg.close()
+        placed = []
         for r in by_contig.get(name, []):
             try:
                 pos = (int(r["start"]) + int(r.get("end") or r["start"])) / 2.0
             except (KeyError, ValueError):
                 continue
-            x = L + pos / longest * PW
+            placed.append((L + pos / longest * PW, pos, r))
+        # label lanes: above the bar (where the markers sit, so they are
+        # reserved first) and below it
+        lanes: List[List[Tuple[float, float]]] = [
+            [(x - 6, x + 6) for x, _, _ in placed], []]
+        for x, pos, r in sorted(placed, key=lambda t: t[0]):
             conf = r.get("confidence", "") or "unresolved"
             cons = r.get("construct", "")
             role = roles.get(cons, "neutral") if conf != "unresolved" else "neutral"
@@ -698,12 +788,20 @@ def fig_genome(fai: List[Tuple[str, int]], called: List[Dict[str, str]],
                 r.get("total_support", "?"),
                 ("  candidates: " + r["candidates"]) if conf == "unresolved"
                 and r.get("candidates") else "")
+            gene, gene_tip = genes[id(r)]
+            gattr = glabel = ""
+            if gene:
+                tip += "  " + gene_tip
+                gattr = ' data-gene="%s"' % escape(gene, {'"': "&quot;"})
+                glabel = _gene_label(gene, x, y, lanes, W)
+                unlabelled += not glabel
             svg.add('<g class="locus" data-contig="%s" data-pos="%d" data-construct="%s" '
-                    'data-confidence="%s"><title>%s</title>'
-                    '<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="2"%s %s/>%s</g>'
-                    % (escape(name), pos, escape(cons), escape(conf), escape(tip),
+                    'data-confidence="%s"%s><title>%s</title>'
+                    '<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke-width="2"%s %s/>%s%s</g>'
+                    % (escape(name), pos, escape(cons), escape(conf), gattr,
+                       escape(tip),
                        x, y - 9, x, y + 7, dash, Svg.paint(None, role),
-                       locus_marker(x, y - 10, conf, role)))
+                       locus_marker(x, y - 10, conf, role), glabel))
 
     # scale bar
     yb = y0 + len(shown) * row + 6
@@ -749,14 +847,32 @@ def fig_genome(fai: List[Tuple[str, int]], called: List[Dict[str, str]],
             notes.insert(0, "; ".join(extra) + ".")
     if not called:
         notes.insert(0, "No called loci in called_sites.tsv.")
+    if labelled:
+        n_genes = sum(1 for lab, _ in genes.values() if lab)
+        notes.append("Gene labels from the host annotation in called_sites.tsv: "
+                     "the gene a locus lies in, or \"near\" its nearest gene "
+                     "when intergenic%s."
+                     % ("; %d of %d not drawn for lack of room (hover the tick, "
+                        "or see the table)" % (unlabelled, n_genes)
+                        if unlabelled else ""))
+    if where:
+        how = ", ".join(x for x in (
+            str(host_record.get("accession") or ""),
+            "decided by %s" % host_record["decided_by"]
+            if host_record.get("decided_by") else "") if x)
+        notes.append("Host: %s%s, as settled by host_reference.py."
+                     % (where, " (%s)" % how if how else ""))
     for n in notes:
         svg.text(20, y + 4, n, size=10, fill="text2")
         y += 15
     svg.h = int(y + 10)
-    caption = ("Host genome overview: %d contigs drawn to scale from the .fai; "
+    caption = ("Host genome overview%s: %d contigs drawn to scale from the .fai; "
                "%d called loci from reconcile_sites.py, coloured by attributed "
                "construct (filled = certain, open = inferred, grey diamond = "
-               "unresolved)." % (len(shown), len(called)))
+               "unresolved)%s."
+               % (" (%s)" % where if where else "", len(shown), len(called),
+                  ", labelled with the overlapping or nearest host gene"
+                  if labelled else ""))
     return svg, caption, notes
 
 
@@ -1023,7 +1139,7 @@ def fig_architecture(summary: Dict, order: Sequence[str], roles: Dict[str, str],
     hatch_ve = svg.hatch("ve", "surface", 45, 5, 1.6)
     svg.text(20, 22, "Site-count bound and copies per site", size=15, weight="600")
     svg.text(20, 40, "from reconcile_sites.py%s" % (
-        " · ploidy %s, min copies per site %s" % (fmt(ploidy, 1), fmt(mcps, 0))
+        " · ploidy %s, min copies per site %s" % (fmt(ploidy, 1), fmt_divisor(mcps))
         if ploidy else ""), size=12, fill="text2")
     svg.text(L, 66, "Integration sites", size=12, weight="600")
     svg.text(X2, 66, "Copies per site (copies per cell ÷ sites)", size=12, weight="600")
@@ -1045,7 +1161,7 @@ def fig_architecture(summary: Dict, order: Sequence[str], roles: Dict[str, str],
     if isinstance(mcps, (int, float)):
         svg.line(CX(mcps), y0 - 16, CX(mcps), yb, stroke="text2", stroke_dasharray="4 3",
                  title="min copies per site assumed by the ceiling: %s" % fmt(mcps, 1))
-        svg.text(CX(mcps), yb + 28, "assumed min %s" % fmt(mcps, 0), size=9,
+        svg.text(CX(mcps), yb + 28, "assumed min %s" % fmt_divisor(mcps), size=9,
                  fill="text2", anchor="middle")
 
     for i, (c, cpc, lo, hi, pt) in enumerate(rows):
@@ -1254,6 +1370,8 @@ def apply_run(a: argparse.Namespace) -> Optional[Tuple[Dict, str]]:
     a.called = a.called or st("reconcile", "called")
     a.site_summary = a.site_summary or st("reconcile", "summary")
     a.fai = a.fai or st("host", "fai")
+    if not a.host:
+        a.host_record = dict(run.stage("host") or {})
     if a.config:
         return None
     try:
@@ -1288,6 +1406,10 @@ def draw(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--called", help="called_sites.tsv from reconcile_sites.py")
     ap.add_argument("--site-summary", help="site_summary.json from reconcile_sites.py")
     ap.add_argument("--fai", help="host genome .fai (samtools faidx) for the overview")
+    ap.add_argument("--host", metavar="HOST.json",
+                    help="host_reference.py's host.json: puts the species and "
+                         "assembly it settled in the overview's title and "
+                         "caption (default: the host stage of --run, if any)")
     ap.add_argument("--baseline", action="append", default=[], metavar="SAMPLE=DEPTH",
                     help="single-genome baseline depth per sample (overrides JSON/config)")
     ap.add_argument("--trim", type=int, help="bases trimmed at block boundaries "
@@ -1302,7 +1424,10 @@ def draw(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--fill-out", metavar="OUT.md",
                     help="where to write the filled report (default: overwrite --fill)")
     a = ap.parse_args(argv)
+    a.host_record = None
     run_cfg = apply_run(a)
+    if a.host:
+        a.host_record = read_input(a.host, "host record", load_json)
     a.out = a.out or "figures"
 
     os.makedirs(a.out, exist_ok=True)
@@ -1461,7 +1586,8 @@ def draw(argv: Optional[Sequence[str]] = None) -> int:
                 print("  note: no called_sites.tsv; drawing chromosomes without loci")
             exclude = list(order) + list(contig_names.values())
             svg, cap, notes = fig_genome(fai, called or [], order, roles, exclude,
-                                         a.min_contig_frac, a.max_contigs, summary)
+                                         a.min_contig_frac, a.max_contigs, summary,
+                                         a.host_record)
             for n in notes:
                 print("  note: %s" % n)
             emit("genome_overview", "genome_overview", svg, cap)

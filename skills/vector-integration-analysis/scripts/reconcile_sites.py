@@ -37,7 +37,9 @@ What it does
                      construct's declared end -> that construct, `inferred`.
      c. copy-ceiling no unique and no end signal. Each construct X admits at
                      most ceil(copies_X * ploidy / --min-copies-per-site)
-                     sites, and that cap is HARD. Among the candidates whose
+                     sites, and that cap is HARD. The divisor defaults to
+                     the copies per site the copy-number JSON measured, and
+                     to 1 when it carries no estimate. Among the candidates whose
                      cap is not yet full, the locus goes to the highest-copy
                      one only when it leads the next by a factor of
                      `--cn-margin`; otherwise nobody gets it.
@@ -152,6 +154,38 @@ def load_copies(path: Optional[str], explicit: Dict[str, str],
         how += ("; overridden from --copies for %s"
                 % ", ".join(sorted(explicit)))
     return copies, ploidy, how
+
+
+def measured_copies_per_site(path: Optional[str], cn_sample: Optional[str]
+                             ) -> Tuple[Optional[float], str]:
+    """The copies per site copy_number.py estimated, to default the ceiling's
+    divisor from. Returns (value or None, where it came from).
+
+    Each sample's `architecture.copies_per_site` is read; with several samples
+    and no `--cn-sample` the SMALLEST is used, the counterpart of taking the
+    largest copy number: the called set is a union over samples, so the
+    divisor must not tighten the ceiling past what any one sample measured.
+    Anything unusable -- no JSON, no architecture block, no estimate, a value
+    below 1 -- gives None, and the caller falls back to 1.
+    """
+    if not path:
+        return None, ""
+    samples = load_json(path).get("samples") or {}
+    use = [cn_sample] if cn_sample else list(samples)
+    vals: Dict[str, float] = {}
+    for s in use:
+        v = ((samples.get(s) or {}).get("architecture") or {}).get(
+            "copies_per_site")
+        if (isinstance(v, (int, float)) and not isinstance(v, bool)
+                and math.isfinite(v) and v >= 1.0):
+            vals[s] = float(v)
+    if not vals:
+        return None, ""
+    s = min(vals, key=lambda k: (vals[k], k))
+    how = "copies per site measured by copy_number.py in sample %s" % s
+    if len(vals) > 1:
+        how += " (the smallest over samples %s)" % ", ".join(vals)
+    return vals[s], how
 
 
 # --------------------------------------------------------------------------
@@ -299,9 +333,10 @@ def ceilings(copies: Dict[str, Optional[float]], constructs: Sequence[str],
         cap_X = ceil(copies_per_haploid_X * ploidy / min_copies_per_site)
 
     `min_copies_per_site` is the fewest copies a real site is assumed to
-    carry: 1 by default, which is the most permissive honest value, and the
-    only one valid for integrase or transposase delivery. Raising it for a
-    concatemer line (where each site holds an array) tightens every cap.
+    carry. 1 is the most permissive honest value, and the only one valid for
+    integrase or transposase delivery. On a concatemer line (where each site
+    holds an array) a larger divisor tightens every cap, so it defaults to
+    the copies per site the copy-number JSON measured, when it carries one.
 
     A construct with no reported copy number gets `None`: unknown, which is
     not the same as unlimited. The copy-ceiling step refuses to attribute to
@@ -638,11 +673,12 @@ def _md_header(result: Dict) -> List[str]:
             "Mappings reconciled: %s. Samples: %s."
             % (", ".join(result["mappings"]), ", ".join(result["samples"])), "",
             "Parameters: window %d bp, --min-reads %d, --min-samples %d, "
-            "--end-tol %d bp, ploidy %s, --min-copies-per-site %s, "
+            "--end-tol %d bp, ploidy %s, --min-copies-per-site %s (%s), "
             "--cn-margin %s. %s."
             % (p["window"], p["min_reads"], p["min_samples"], p["end_tol"],
-               p["ploidy"], p["min_copies_per_site"], p["cn_margin"],
-               result["copy_number_source"]), ""]
+               p["ploidy"], p["min_copies_per_site"],
+               p.get("min_copies_per_site_source") or "--min-copies-per-site",
+               p["cn_margin"], result["copy_number_source"]), ""]
 
 
 def _md_per_construct(result: Dict) -> List[str]:
@@ -828,15 +864,16 @@ def ceiling_divisor_finding(args: argparse.Namespace,
                             modality: Optional[str]) -> Optional[str]:
     """Is the ceiling nominal where the run's own measurement could bind it?
 
-    `--min-copies-per-site` is never taken from the measurement silently: it
-    changes every site range, so it stays a decision. But leaving it at 1 on
-    a line whose copy-number stage measured arrays is worth saying out loud.
+    The divisor defaults to the measured copies per site when the copy-number
+    JSON carries one, so this is left for a divisor that is 1 anyway -- set
+    explicitly, or the fallback when only the run manifest holds the
+    measurement -- on a line whose copy-number stage measured arrays.
     """
     capable = (MODALITIES.get(modality or "auto") or {}).get("concatemers")
     if (measured is None or measured <= 1.0 or capable is False
             or args.min_copies_per_site != 1.0):
         return None
-    return ("--min-copies-per-site was left at 1, but the copy-number stage "
+    return ("--min-copies-per-site is 1, but the copy-number stage "
             "measured %.4g copies per site on this line. With a divisor of 1 "
             "every ceiling is nominal: the upper bound of each site range is "
             "the copy number itself. To make the ceiling binding, rerun with "
@@ -911,7 +948,8 @@ def site_accounting(per_construct: Dict[str, Dict], unresolved: int,
 
 def stage_checks(checks: Checks, found: Sequence[Tuple[str, str, str]],
                  attr_caveats: Sequence[str], divisor: Optional[str],
-                 n_called: int, shortfall: Optional[str] = None) -> Checks:
+                 n_called: int, shortfall: Optional[str] = None,
+                 divisor_ok: str = "") -> Checks:
     by_id = {cid: (status, msg) for cid, status, msg in found}
     for cid, ok in PREFLIGHT_CHECKS:
         status, msg = by_id.get(cid, (PASS, ok))
@@ -922,7 +960,7 @@ def stage_checks(checks: Checks, found: Sequence[Tuple[str, str, str]],
         checks.add("ceiling_contradiction", PASS,
                    "no construct holds more sites than its ceiling admits")
     checks.add("ceiling_divisor", WARN if divisor else PASS,
-               divisor or "ceiling divisor needs no attention")
+               divisor or divisor_ok or "ceiling divisor needs no attention")
     checks.add("sites_called", PASS if n_called else WARN,
                "%d locus/loci called" % n_called)
     checks.add("site_accounting", WARN if shortfall else PASS,
@@ -952,6 +990,8 @@ def build_result(args: argparse.Namespace, tables: Dict[str, str],
                        "end_tol": args.end_tol,
                        "ploidy": ploidy,
                        "min_copies_per_site": args.min_copies_per_site,
+                       "min_copies_per_site_source":
+                           getattr(args, "min_copies_per_site_source", ""),
                        "cn_margin": args.cn_margin,
                        "ploidy_source": ploidy_source},
         "n_entries": len(entries), "n_unified": len(unified),
@@ -1028,11 +1068,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="haploid equivalents per cell. Default: taken from "
                          "the copy-number JSON if it implies one, else 2 with "
                          "a caveat. It scales every ceiling, so measure it.")
-    ap.add_argument("--min-copies-per-site", type=float, default=1.0,
+    ap.add_argument("--min-copies-per-site", type=float, default=None,
                     help="fewest copies a real site is assumed to carry, used "
-                         "as the ceiling's divisor (default 1.0, the most "
-                         "permissive honest value and the only one valid for "
-                         "integrase or transposase delivery)")
+                         "as the ceiling's divisor. Default: the copies per "
+                         "site the copy-number JSON measured (its "
+                         "architecture block), else 1.0, the most permissive "
+                         "honest value and the only one valid for integrase "
+                         "or transposase delivery. Pass it to override.")
     ap.add_argument("--cn-margin", type=float, default=2.0,
                     help="how far the highest-copy admissible candidate must "
                          "lead the next before a shared locus is attributed "
@@ -1137,9 +1179,12 @@ def read_inputs(args: argparse.Namespace) -> Dict:
         entries, samples, per_table = read_all_loci(tables)
         copies, implied_ploidy, cn_how = load_copies(
             args.copy_number or None, explicit, args.cn_sample or None)
+        cps, cps_how = measured_copies_per_site(
+            args.copy_number or None, args.cn_sample or None)
     except (OSError, ValueError) as exc:
         raise InputError(str(exc))
-    return {"ident": ident, "known": known, "tables": tables, "ends": ends,
+    return {"ident": ident, "copies_per_site": cps,
+            "copies_per_site_source": cps_how, "known": known, "tables": tables, "ends": ends,
             "entries": entries, "samples": samples, "per_table": per_table,
             "copies": copies, "implied_ploidy": implied_ploidy,
             "cn_how": cn_how}
@@ -1155,6 +1200,32 @@ def resolve_ploidy(args: argparse.Namespace, implied: Optional[float],
     if ploidy is None:
         return 2.0, "assumed 2", True
     return ploidy, source or "copy-number JSON", False
+
+
+def resolve_divisor(args: argparse.Namespace, measured: Optional[float],
+                    how: str) -> str:
+    """Settle `args.min_copies_per_site`; return a note when it was measured.
+
+    An explicit flag wins. Otherwise the copy-number JSON's copies per site,
+    and 1 when it carries no usable estimate.
+    """
+    if args.min_copies_per_site is not None:
+        args.min_copies_per_site_source = "--min-copies-per-site"
+        return ""
+    if measured is None:
+        args.min_copies_per_site = 1.0
+        args.min_copies_per_site_source = (
+            "default: no copies-per-site estimate in a copy-number JSON")
+        return ""
+    args.min_copies_per_site = measured
+    args.min_copies_per_site_source = how
+    if measured <= 1.0:
+        return ""
+    return ("ceiling divisor %.4g taken from the %s. It is an average over "
+            "sites, so each ceiling is the site count the measured DNA "
+            "implies at that array size, not a bound that holds whatever "
+            "the arrays look like; --min-copies-per-site 1 restores that "
+            "bound." % (measured, how))
 
 
 def compute_sites(args: argparse.Namespace, inputs: Dict, ploidy: float,
@@ -1217,7 +1288,7 @@ def report_stderr(result: Dict, per_construct: Dict[str, Dict],
 
 
 def run_stage(args: argparse.Namespace) -> int:
-    if args.min_copies_per_site <= 0:
+    if args.min_copies_per_site is not None and args.min_copies_per_site <= 0:
         raise InputError("--min-copies-per-site must be greater than 0, got "
                          "%g" % args.min_copies_per_site)
     run, given = merge_manifest(args)
@@ -1225,12 +1296,18 @@ def run_stage(args: argparse.Namespace) -> int:
     ploidy, ploidy_source, assumed = resolve_ploidy(
         args, inputs["implied_ploidy"], given["ploidy_source"])
     given["ploidy_assumed"] = assumed
+    divisor_note = resolve_divisor(args, inputs["copies_per_site"],
+                                   inputs["copies_per_site_source"])
+    if given["copies_per_site"] is None:
+        given["copies_per_site"] = inputs["copies_per_site"]
+    if divisor_note:
+        print("  " + divisor_note, file=sys.stderr)
 
     computed = compute_sites(args, inputs, ploidy, given)
     checks = stage_checks(Checks("reconcile_sites", args.accept),
                           computed["found"], computed["attr_caveats"],
                           computed["divisor"], len(computed["called"]),
-                          computed["shortfall"])
+                          computed["shortfall"], divisor_note)
 
     result = build_result(args, inputs["tables"], inputs["samples"],
                           inputs["cn_how"], ploidy, ploidy_source,

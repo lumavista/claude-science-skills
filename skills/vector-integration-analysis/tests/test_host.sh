@@ -226,6 +226,96 @@ assert_has "genome overview drawn from the host stage" mf/figs.log "wrote .*geno
 assert_has "coverage drawn from the manifest's depth files" mf/figs.log "wrote .*coverage_s1_pEpsilon.svg"
 
 echo
+echo "== the genome overview carries the host context when there is one =="
+overview() { # overview <figures dir>: what host context the overview shows
+  "$PY" - "$1" <<'EOF'
+import json, sys, xml.etree.ElementTree as ET
+NS = "{http://www.w3.org/2000/svg}"
+d = sys.argv[1]
+root = ET.parse(d + "/genome_overview.svg").getroot()
+loci = [e for e in root.iter(NS + "g") if e.get("class") == "locus"]
+labels = sorted(t.text for t in root.iter(NS + "text")
+                if "gene-label" in (t.get("class") or "").split())
+genes = sorted(e.get("data-gene") for e in loci if e.get("data-gene"))
+host = [t.text for t in root.iter(NS + "text") if "host" in (t.get("class") or "").split()]
+cap = [f["caption"] for f in json.load(open(d + "/figures.json"))["figures"]
+       if f["id"] == "genome_overview"][0]
+title = root.find(NS + "title").text
+print("loci=%d labels=%s genes=%s host=%s title=%s caption=%s"
+      % (len(loci), ",".join(labels), ",".join(genes), "|".join(host),
+         "Homo sapiens, GRCh38.p14" in title,
+         "(Homo sapiens, GRCh38.p14)" in cap))
+EOF
+}
+WANT_HOST="loci=8 labels=EXA,INB,near NEC genes=EXA,INB,near NEC host=Homo sapiens, GRCh38.p14 title=True caption=True"
+got=$(overview mf/figures)
+[ "$got" = "$WANT_HOST" ] \
+  && ok "--run: gene labels on the annotated loci, species and assembly in title and caption" \
+  || bad "host context on the overview was '$got'"
+assert_has "the figure names how the host was decided" \
+  mf/figures/genome_overview.svg "Host: Homo sapiens, GRCh38.p14 \(GCF_000001405.40, decided by hint\)"
+assert_has "an intergenic locus's tooltip gives the nearest gene, distance and side" \
+  mf/figures/genome_overview.svg "intergenic, nearest gene NEC 50.0 kb downstream"
+# the same inputs given explicitly, without a manifest
+"$PY" "$SCRIPTS/make_figures.py" --out figs_host --called mf/called_sites.tsv \
+  --fai mf/host_reference/host.fai --host mf/host_reference/host.json \
+  >figs_host.log 2>&1 && ok "make_figures --host" || { bad "make_figures --host"; cat figs_host.log; }
+got=$(overview figs_host)
+[ "$got" = "$WANT_HOST" ] \
+  && ok "--host host.json gives the same host context as the manifest" \
+  || bad "--host overview was '$got'"
+# no host record and no gene columns: the .fai-only figure, as before
+"$PY" "$SCRIPTS/make_figures.py" --out figs_plain --called nohost/called_sites.tsv \
+  --fai mf/host_reference/host.fai >figs_plain.log 2>&1 \
+  && ok "make_figures from the .fai alone" || { bad ".fai-only overview"; cat figs_plain.log; }
+got=$(overview figs_plain)
+[ "$got" = "loci=8 labels= genes= host= title=False caption=False" ] \
+  && ok ".fai alone: same ticks, no gene labels, no host caption" \
+  || bad ".fai-only overview was '$got'"
+assert_has ".fai-only caption is the generic one" figs_plain/figures.json \
+  "Host genome overview: [0-9]+ contigs drawn to scale"
+# loci too close to label separately: nothing overlaps, the omission is said
+"$PY" - <<'EOF' >crowd.log 2>&1
+import csv
+rows = list(csv.DictReader(open("mf/called_sites.tsv"), delimiter="\t"))
+base = [r for r in rows if r["host_gene"] == "EXA"][0]
+out = []
+for i in range(6):
+    r = dict(base); r["start"] = r["end"] = str(5_000_000 + i * 1000)
+    r["host_gene"] = "GENE%d" % i
+    out.append(r)
+with open("crowd.tsv", "w", newline="") as fh:
+    w = csv.DictWriter(fh, list(base), delimiter="\t", lineterminator="\n")
+    w.writeheader(); w.writerows(out)
+EOF
+"$PY" "$SCRIPTS/make_figures.py" --out figs_crowd --called crowd.tsv \
+  --fai mf/host_reference/host.fai >figs_crowd.log 2>&1 || bad "crowded overview"
+"$PY" - <<'EOF' >crowd_check.log 2>&1
+import xml.etree.ElementTree as ET
+NS = "{http://www.w3.org/2000/svg}"
+root = ET.parse("figs_crowd/genome_overview.svg").getroot()
+loci = [e for e in root.iter(NS + "g") if e.get("class") == "locus"]
+assert len(loci) == 6 and all(e.get("data-gene") for e in loci)
+boxes = []
+for t in root.iter(NS + "text"):
+    if "gene-label" in (t.get("class") or ""):
+        w = len(t.text) * 9 * 0.56
+        x = float(t.get("x"))
+        a = x if t.get("text-anchor") == "start" else x - w
+        boxes.append((t.get("y"), a, a + w))
+assert 0 < len(boxes) < 6, boxes
+for i, (y, a, z) in enumerate(boxes):
+    for y2, a2, z2 in boxes[i + 1:]:
+        assert y != y2 or z <= a2 or z2 <= a, ("overlap", boxes)
+note = "%d of 6 not drawn for lack of room" % (6 - len(boxes))
+assert note in open("figs_crowd/genome_overview.svg").read(), note
+print("OK")
+EOF
+grep -q "^OK$" crowd_check.log \
+  && ok "crowded loci: labels never overlap, and the ones left off are counted" \
+  || { bad "crowded gene labels"; cat crowd_check.log; }
+
+echo
 echo "== a declared genome_size that contradicts the assembly =="
 cp -r nohost wrong
 "$PY" - <<'EOF'

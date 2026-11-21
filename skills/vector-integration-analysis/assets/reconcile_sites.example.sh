@@ -40,9 +40,10 @@ python scripts/reconcile_sites.py \
     --min-samples 2 \
     \
     `# the ceiling's divisor: the fewest copies a real site is assumed to` \
-    `# carry. 1 is the only valid value for integrase/transposase delivery;` \
-    `# on a concatemer line pass the copies per site copy_number.py measured.` \
-    --min-copies-per-site 1 \
+    `# carry. Left out, it is the copies per site copy_number.py measured` \
+    `# (from --copy-number), else 1. Pass it only to override; 1 is the only` \
+    `# valid value for integrase/transposase delivery.` \
+    `# --min-copies-per-site 1` \
     \
     `# how far the top candidate must lead on copy number before a shared` \
     `# locus is attributed to it at all. Raise it to be more conservative.` \
