@@ -67,16 +67,28 @@ produces a correct result** — the GPU is an accelerator, never a requirement,
 and no skill fails because a GPU is absent.
 
 `SCI_DEVICE` overrides autodetection everywhere: `cpu` forces a reproducible CPU
-run, `cuda` demands a GPU. The value is honored verbatim rather than validated,
-so a forced device fails loudly instead of quietly running somewhere else.
-`molecular-dynamics` also accepts `SCI_PLATFORM` and `SCI_PRECISION`.
+run, `cuda` demands a GPU. A forced device fails loudly instead of quietly
+running somewhere else — `esm` passes the value to torch verbatim, and `scanpy`
+and `molecular-dynamics` refuse a value they cannot serve rather than falling
+back to the CPU in silence. `molecular-dynamics` also accepts `SCI_PLATFORM`
+and `SCI_PRECISION`.
 
 Six skills have a GPU route: `esm` (torch), `molecular-dynamics` (OpenMM CUDA),
 `scanpy` (rapids-singlecell), `construct-assembly` (ThermoMPNN, for large mutant
-scans), `tamarind` (cloud GPU), and `immunoinformatics` (routing only). Each
-carries its own copy of the device selector — the skills import independently,
-so the duplication is deliberate; `skills/esm/scripts/_device.py` is the
-canonical version and `grep -rl SCI_DEVICE skills/` lists the copies.
+scans), `tamarind` (cloud GPU), and `immunoinformatics` (routing only). There
+are **three** device selectors, not one per skill, and they select different
+kinds of thing, which is why they are not shared code:
+
+| Selector | Chooses |
+|---|---|
+| `skills/esm/scripts/_device.py` | a torch device string |
+| `skills/scanpy/scripts/_common.py` (`select_backend`) | a CUDA module stack (rapids-singlecell) |
+| `skills/molecular-dynamics/scripts/select_platform.py` | an OpenMM platform, verified by running a tiny system |
+
+`tamarind` and `immunoinformatics` contain no `SCI_DEVICE` at all — they route
+work elsewhere rather than selecting a local device. A `grep -rl SCI_DEVICE
+skills/` returns 11 files, mostly prose, so it does not enumerate either the
+selectors or the GPU skills; use the table.
 
 GPU availability is a packaging question as much as a hardware one: several
 accelerated stacks publish no wheel for every platform, so a GPU route can be
@@ -154,7 +166,8 @@ runs end to end with FastTree where IQ-TREE is unavailable, stating what is lost
 (ModelFinder, ultrafast bootstrap, SH-aLRT) rather than letting a write-up imply
 a full ML analysis. Several upstream defects found by running the code — a
 temp-file rename failure, a silently skipped tree-collapse check, and an amino
-acid alphabet missing J, U and O — were fixed, with regression tests added.
+acid alphabet missing J, U and O — were fixed. (`phylogenetics` has no test
+suite of its own; `vector-integration-analysis` is the only skill with one.)
 
 ## Specialists
 

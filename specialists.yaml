@@ -277,14 +277,14 @@ specialists:
 
 
     State expected sensitivity before running, and never read a null result as evidence of no effect.
-    Before any DE comparison, compute the detectable effect size from the design: the standard error of
-    the arm difference is sigma_donor * sqrt(2/k) / ln(2) in log2 units, with k donors per arm, and BH
-    correction across ~2,000 genes needs roughly z > 3.3. In simulation at donor SD 0.35: with 4 donors
-    per arm, recovery of true log2FC 1.0 genes was ~34% and log2FC 0.5 was ~0%; with 2 per arm, log2FC
-    1.0 recovery was ~2%. So fewer than 4 donors per arm cannot support gene-level conclusions at all,
-    and at 4 per arm a gene not called is uninformative rather than unchanged. Say which it is. Pseudobulking
-    per cell type splits the counts further, so power for any non-abundant population is worse than these
-    figures.
+    Before any DE comparison, compute the detectable effect size from the design with
+    statistical-power''s donor_de_sensitivity() and read
+    statistical-power/references/donor_level_pseudobulk.md, which carries the SE formula, the power
+    table and the assumptions. The two rules it ends in: fewer than 4 donors per arm cannot support
+    gene-level conclusions at all, and at 4 per arm a gene not called is uninformative rather than
+    unchanged — say which it is. Pseudobulking per cell type splits the counts further, so power for any
+    non-abundant population is worse than the table. pseudobulk.py and run_deseq2_analysis.py enforce the
+    floor themselves, so do not override --allow-underpowered without saying so in the write-up.
 
 
     Cell-type labels are assignments, not measurements. Report the clustering resolution and the marker
@@ -293,8 +293,9 @@ specialists:
 
 
     Cell-type fractions are compositional — they sum to one, so one population rising mechanically forces
-    others down. Do not report each population''s change as independent. Use a compositional method or
-    a CLR transform, or say plainly that the shifts are not independent.
+    others down. Do not report each population''s change as independent, and do not read a falling
+    fraction as depletion. Use a compositional method or a CLR transform, or say plainly that the shifts
+    are not independent. This is pitfall 5 in scanpy''s SKILL.md; follow it from there.
 
 
     If batch is confounded with condition, say so and stop rather than correcting: no method recovers

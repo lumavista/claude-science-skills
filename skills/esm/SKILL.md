@@ -275,10 +275,31 @@ per-residue extraction, gradient behavior and migration details.
 ESMFold2 folding uses [scripts/fold_with_fallback.py](scripts/fold_with_fallback.py),
 which routes to the best available backend without simulating results. Route order:
 
-1. **Hosted API** (if `ESM_API_KEY` set) — works in Claude Science sandbox
+1. **Hosted API** (needs `ESM_API_KEY` *and* the Biohub `esm` SDK) — works in
+   the Claude Science sandbox
 2. **WSL2 local folding** (if WSL2 detected on Windows) — accesses your GPU
 3. **Native Linux/Mac** (if running natively) — GPU or CPU
-4. **Fail loudly** (if no viable route) — clear instructions, no synthetic data
+4. **Fail loudly** (if no viable route) — reports every route it tried and why
+   each failed; no synthetic data
+
+A failure in an earlier route now falls through to the next one. It previously
+re-raised unless `force_local` was set, so the function named
+`fold_with_fallback` had no fallback.
+
+**Each sequence is folded in its own request.** Co-folding them as chains of one
+complex is a different scientific question: independent monomers acquire
+interchain contacts that do not exist. The example below folds a wild type and a
+point variant, and each output `pdb` is that one chain — not a WT·Var01
+heterodimer.
+
+**Routes 2 and 3 need the legacy `fair-esm` package, not this SDK.** They call
+`esm.pretrained.esmfold_v1`, which does not exist in Biohub `esm`; the hosted
+route needs Biohub `esm`, which does not provide `esmfold_v1`. Since the two
+distributions both import as `esm` and must never share an environment, **no
+single environment can serve both the hosted and the local routes.** The script
+detects which package owns the `esm` name and says so rather than blaming a
+missing SDK for an API that was never there. Plan for the hosted route in the
+sandbox and a separate `fair-esm` environment for local folding.
 
 ### Setup: Create an API key
 
@@ -371,10 +392,12 @@ establish account access, service availability or prediction quality.
 ## Verification and sources
 
 [references/review.md](references/review.md) records official sources, executed
-CPU tests and limitations. Run `python tests/run_all.py --isolated esm` from the
-repository to exercise synthetic local models, pooling, input serialization,
-PDB round trips and mocked hosted contracts. ESM3 and ESMFold2 pretrained
-inference and authenticated services were not executed.
+CPU tests and limitations. Those checks — synthetic local models, pooling, input
+serialization, PDB round trips and mocked hosted contracts — were run in the
+**upstream** skill repository, whose harness is not vendored here; this repo
+ships no test suite for `esm`, so treat the review as a record of what was
+verified there rather than something you can re-run. ESM3 and ESMFold2
+pretrained inference and authenticated services were not executed.
 
 `scripts/_device.py` is verified on both branches: the CPU fallback (no torch
 installed — returns `cpu`, helpers return `None` rather than raising, and

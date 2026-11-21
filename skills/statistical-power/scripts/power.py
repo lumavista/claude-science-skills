@@ -389,6 +389,108 @@ def mde(test, nobs1=None, nobs=None, alpha=0.05, power=0.80,
     return sign * effect
 
 
+#: BH's effective z threshold is not a constant: it is alpha*R/m for R
+#: discoveries among m genes, so it tightens toward Bonferroni as the number of
+#: truly changed genes falls. These two bracket the realistic range at
+#: m ~ 2000 -- the conservative end is Bonferroni (R = 1), the optimistic end
+#: is roughly R ~ 100 discoveries.
+_BH_Z_OPTIMISTIC = 3.0
+
+
+def donor_de_sensitivity(sigma_donor=0.35, donors_per_arm=4, n_genes=2000,
+                         alpha=0.05, log2fc=(0.5, 1.0, 1.5, 2.0)):
+    """Detectable log2 fold change for donor-level pseudobulk DE.
+
+    The sensitivity calculation for the design that actually gets run in
+    systems vaccinology: aggregate cells to one pseudobulk profile per donor
+    per cell type, then test across DONORS. Donors are the replicates, so `k`
+    is the number of donors per arm, not the number of cells.
+
+    The arm difference has standard error
+
+        SE = sigma_donor * sqrt(2 / k) / ln(2)      (log2 units)
+
+    A gene is detectable when |log2FC| / SE clears the multiple-testing
+    threshold. That threshold is a RANGE, not a number: Benjamini-Hochberg
+    rejects at p <= alpha*R/m for R discoveries among m genes, so it sits near
+    Bonferroni when almost nothing is truly changed and relaxes as the number
+    of real signals grows. Returning a single power figure here would imply a
+    precision the design does not have, so this returns both ends:
+
+      power_conservative  BH ~ Bonferroni (few genes truly changed)
+      power_optimistic    BH with ~100 discoveries
+
+    The simulated figures this reproduces (donor SD 0.35, m ~ 2000): at 4
+    donors per arm, recovery of true log2FC 1.0 genes was ~34% and log2FC 0.5
+    ~0%; at 2 per arm, log2FC 1.0 recovery was ~2%. Each sits inside the
+    returned envelope, which is why the envelope rather than one point.
+
+    Two things this is for. Before the run: choose the design, or discover that
+    no design you can afford will answer the question. After the run: decide
+    what a gene that was NOT called means. Below ~4 donors per arm it means
+    nothing at all; at 4 it is uninformative rather than unchanged. Never read
+    a null result as evidence of no effect without this number in hand.
+
+    Pseudobulking per cell type splits the counts further, so sensitivity for
+    any non-abundant population is WORSE than this returns. Treat the result as
+    an optimistic bound for the most abundant cell type. It also assumes the
+    donor-level variance dominates, which is the regime pseudobulk is used in;
+    it says nothing about a design whose cells-per-donor is the limit.
+    """
+    from scipy import stats
+
+    k = int(donors_per_arm)
+    if k < 1:
+        raise ValueError("donors_per_arm must be >= 1")
+    if sigma_donor <= 0:
+        raise ValueError("sigma_donor must be positive")
+    m = max(1, int(n_genes))
+    se = float(sigma_donor) * math.sqrt(2.0 / k) / math.log(2.0)
+    z_cons = float(stats.norm.isf(alpha / (2.0 * m)))
+    z_opt = _BH_Z_OPTIMISTIC
+
+    def _power(fc, z):
+        ncp = abs(float(fc)) / se
+        return float(stats.norm.sf(z - ncp) + stats.norm.cdf(-z - ncp))
+
+    detectable = {
+        float(fc): {"power_conservative": _power(fc, z_cons),
+                    "power_optimistic": _power(fc, z_opt)}
+        for fc in log2fc
+    }
+    return {
+        "se": se,
+        "z_conservative": z_cons,
+        "z_optimistic": z_opt,
+        "donors_per_arm": k,
+        "sigma_donor": float(sigma_donor),
+        "n_genes": m,
+        "detectable": detectable,
+        "min_detectable_log2fc": {"conservative": z_cons * se,
+                                  "optimistic": z_opt * se},
+        "verdict": ("fewer than 4 donors per arm cannot support gene-level "
+                    "conclusions" if k < 4 else
+                    "at 4 donors per arm a gene not called is uninformative, "
+                    "not unchanged" if k == 4 else
+                    "report the detectable effect alongside any null result"),
+    }
+
+
+def sensitivity_table(test, effect_sizes, alpha=0.05, power=0.80, **kw):
+    """Required n across a RANGE of effect sizes: [(effect, n), ...].
+
+    This is the deliverable the skill asks for -- "required n of 45-100 per
+    group across d = 0.40-0.60" -- and the orthogonal axis to `power_curve`,
+    which varies n at one fixed effect. Reporting a single n implies an effect
+    size nobody has measured yet.
+    """
+    out = []
+    for es in effect_sizes:
+        out.append((float(es), sample_size(test, effect_size=es, alpha=alpha,
+                                           power=power, **kw)))
+    return out
+
+
 def power_curve(test, effect_size=None, n_range=None, alpha=0.05, power_target=0.80,
                 alternative="two-sided", save=None, show=False, **kw):
     """Plot power vs. sample size. Returns (n_array, power_array).

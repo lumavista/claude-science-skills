@@ -1,9 +1,12 @@
 """Device selection for torch workloads: GPU when present, CPU as fallback.
 
-This is the canonical copy of a small snippet duplicated verbatim into every
-skill in this collection that drives a torch model. Skills are imported
-individually, so they cannot share a module; the duplication is deliberate.
-Keep copies in sync -- `grep -rl "SCI_DEVICE" skills/` lists them.
+`esm` is the only skill in this collection that selects a torch device, so this
+file has no copies to keep in sync. Two sibling skills select a different kind
+of thing and are separate implementations on purpose, not duplicates of this
+one: `scanpy/scripts/_common.py` (`select_backend`) chooses a CUDA *module
+stack*, and `molecular-dynamics/scripts/select_platform.py` chooses an OpenMM
+*platform* and verifies it by running a tiny system. All three honour
+SCI_DEVICE; only this one returns a torch device string.
 
 Contract: CPU always produces a correct result. The GPU is an accelerator, so
 nothing here raises when torch is missing or no GPU is visible -- it returns

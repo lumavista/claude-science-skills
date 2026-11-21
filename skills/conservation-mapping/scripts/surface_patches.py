@@ -71,13 +71,22 @@ def write_meta(out: Path, payload: dict) -> None:
 
 
 def read_ca(path: Path, chain: str | None):
-    """[(resseq, icode, one_letter, (x,y,z))] for CA atoms."""
+    """[(resseq, icode, one_letter, (x,y,z))] for CA atoms.
+
+    Residues are keyed by (resseq, icode) with no chain, because that is the key
+    the conservation track joins on. That makes --chain mandatory whenever the
+    file holds more than one chain: on a trimer, A:412 and B:412 collide, one
+    protomer's residue is silently dropped, and cluster() then measures
+    distances between residues of different protomers.
+    """
     out, seen = [], set()
+    chains_seen: set[str] = set()
     with path.open() as fh:
         for line in fh:
             if not line.startswith("ATOM") or line[12:16].strip() != "CA":
                 continue
             ch = line[21]
+            chains_seen.add(ch)
             if chain and ch != chain:
                 continue
             one = THREE_TO_ONE.get(line[17:20].strip().upper())
@@ -94,6 +103,12 @@ def read_ca(path: Path, chain: str | None):
                 continue
             seen.add(key)
             out.append((resseq, line[26].strip(), one, xyz))
+    if chain is None and len(chains_seen) > 1:
+        die(f"{path.name} holds {len(chains_seen)} chains "
+            f"({', '.join(sorted(c for c in chains_seen if c.strip()))}) and "
+            "--chain was not given. Residue numbers are not unique across "
+            "chains, so patches would be clustered across protomers. Pass "
+            "--chain to pick one.")
     return out
 
 
@@ -274,12 +289,18 @@ def main() -> None:
                 if len(c) >= args.min_residues]
     clusters.sort(key=len, reverse=True)
 
+    # One lookup table instead of a linear scan over every CA per patch residue,
+    # and no silent alanine default: a miss is a bug, not a 200 A^2 guess.
+    one_by_key = {(rs, ic): o for rs, ic, o, _ in ca}
+
     rows = []
     for i, cl in enumerate(sorted(clusters, key=len, reverse=True), 1):
         cl_sorted = sorted(cl)
-        area = sum(rsa.get(k, 0.0) * MAX_ASA.get(
-            next((o for rs, ic, o, _ in ca if (rs, ic) == k), "A"), 200.0)
-            for k in cl_sorted)
+        missing = [k for k in cl_sorted if k not in one_by_key]
+        if missing:
+            die(f"patch residues absent from the structure: {missing[:5]}")
+        area = sum(rsa.get(k, 0.0) * MAX_ASA.get(one_by_key[k], 200.0)
+                   for k in cl_sorted)
         ents = [cons[k] for k in cl_sorted if k in cons]
         rows.append([
             f"patch_{i}", len(cl_sorted), round(area, 1),
@@ -289,20 +310,28 @@ def main() -> None:
 
     out = Path(args.out)
     with out.open("w") as fh:
-        fh.write("patch_id\tn_residues\tapprox_area_A2\tmean_entropy\t"
+        fh.write("patch_id\tn_residues\tsummed_sasa_A2\tmean_entropy\t"
                  "residues\n")
         for r in rows:
             fh.write("\t".join(str(x) for x in r) + "\n")
 
     log(f"patches: {len(rows)} found -> {out}")
-    big = [r for r in rows if isinstance(r[2], float) and r[2] >= 600]
+    # summed_sasa_A2 is the total solvent-accessible area of the patch residues,
+    # which is an UPPER BOUND on the area an antibody would bury: a 600-900 A^2
+    # Fab footprint is buried surface, roughly half of one partner's contact
+    # area, so comparing summed SASA against 600 over-calls patches as
+    # Fab-sized by a factor of ~2-3. Flag against ~1200 instead.
+    FAB_SUMMED_SASA = 1200
+    big = [r for r in rows if isinstance(r[2], float) and r[2] >= FAB_SUMMED_SASA]
     if big:
-        log(f"{len(big)} patch(es) at or above 600 A^2, the rough lower bound "
-            f"for a Fab footprint")
+        log(f"{len(big)} patch(es) at or above {FAB_SUMMED_SASA} A^2 summed SASA, "
+            f"consistent with a 600-900 A^2 buried Fab footprint (summed SASA is "
+            f"an upper bound on buried area, not the footprint itself)")
     else:
-        log("no patch reaches 600 A^2 — the conserved surface here may be too "
-            "fragmented for a single antibody footprint. Consider relaxing "
-            "--entropy-max or widening --linkage, and say which you changed.")
+        log(f"no patch reaches {FAB_SUMMED_SASA} A^2 summed SASA — on this "
+            f"structure and panel the conserved exposed surface is too "
+            f"fragmented for a single antibody footprint. Report that as the "
+            f"result.")
 
     write_meta(out, {
         "pdb": args.pdb,

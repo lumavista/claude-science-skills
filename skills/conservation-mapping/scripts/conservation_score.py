@@ -113,6 +113,10 @@ def read_alignment(path: Path) -> list[tuple[str, str]]:
     recs = read_fasta(path)
     if not recs:
         die(f"no sequences found in {path}")
+    if len(recs) < 2:
+        die(f"{path} holds {len(recs)} sequence; conservation is a property of a "
+            "panel and is undefined for one sequence. Supply an alignment of the "
+            "strain, variant or homologue panel.")
     lengths = {len(s) for _, s in recs}
     if len(lengths) != 1:
         die(
@@ -175,8 +179,28 @@ def henikoff_weights(seqs: list[str]) -> np.ndarray:
             if c not in GAPS:
                 w[i] += 1.0 / (r * counts[c])
     if w.sum() == 0:
+        # Every column is invariant, so Henikoff has no variation to weight by.
+        # Uniform weights are the only defensible choice, but they make
+        # 1/sum(w^2) equal n -- i.e. maximum independence inferred from zero
+        # information. Callers must cap effective N by the number of DISTINCT
+        # sequences (see effective_n below), which is 1 here.
         return np.ones(n) / n
     return w / w.sum()
+
+
+def effective_n(seqs, weights) -> float:
+    """Kish effective sample size, capped by the number of distinct sequences.
+
+    1/sum(w^2) alone is wrong at the degenerate end: a panel of 200 identical
+    sequences carries one sequence's worth of information but falls through to
+    uniform weights and reports effective N = 200 -- maximum confidence from
+    zero information, in the one number this skill exists to produce.
+    """
+    import numpy as np
+
+    kish = float(1.0 / np.sum(np.asarray(weights) ** 2))
+    distinct = len({s for s in seqs})
+    return min(kish, float(distinct))
 
 
 def column_stats(col, weights, gap_cutoff):
@@ -376,10 +400,15 @@ def main() -> None:
 
     weights = (np.ones(len(seqs)) / len(seqs) if args.no_weight
                else henikoff_weights(seqs))
-    eff_n = float(1.0 / np.sum(weights ** 2))
+    eff_n = effective_n(seqs, weights)
 
-    log(f"panel: {len(seqs)} sequences, {len(ref_aln)} columns, "
-        f"effective N = {eff_n:.1f}")
+    n_distinct = len(set(seqs))
+    log(f"panel: {len(seqs)} sequences ({n_distinct} distinct), "
+        f"{len(ref_aln)} columns, effective N = {eff_n:.1f}")
+    if n_distinct == 1:
+        log("WARNING: every sequence in this panel is identical. There is no "
+            "variation to measure, so the conservation track below is "
+            "uninformative, not evidence of conservation.")
     if eff_n < 10:
         log("WARNING: effective sample size below 10. Conservation estimates "
             "are noisy and clade-biased; report this figure alongside any "

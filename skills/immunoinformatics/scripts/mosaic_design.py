@@ -331,6 +331,10 @@ def main() -> None:
     p.add_argument("-n", type=int, default=4, help="number of components")
     p.add_argument("--unweighted", action="store_true")
     p.add_argument("--beam", type=int, default=200)
+    p.add_argument("--check-k", default="9,15", dest="check_k",
+                   help="additional k values to screen for novel k-mers "
+                        "(default 9,15: class I and class II registers). The "
+                        "de Bruijn guarantee holds only at the build k.")
     p.add_argument("--max-len", type=int, default=0, dest="max_len")
     p.add_argument("--min-len", type=int, default=0, dest="min_len")
     p.add_argument("--out", required=True,
@@ -388,8 +392,38 @@ def main() -> None:
             for nm, pos, km in nov[:10]:
                 log(f"  {nm}:{pos} {km}")
         else:
-            log(f"junction check passed: every {args.k}-mer in every design "
-                f"occurs in the panel")
+            log(f"junction check passed at the build k: every {args.k}-mer in "
+                f"every design occurs in the panel")
+        # The de Bruijn construction guarantees nothing above the build k. A
+        # k=9 mosaic recombining two variable sites 10 residues apart creates
+        # 15-mers present in no strain -- i.e. class II registers of the very
+        # construct sold as junction-free. Screen the longer registers too.
+        longer = sorted({int(x) for x in args.check_k.split(",") if x.strip()}
+                        - {args.k})
+        novel_rows = []
+        for kk in longer:
+            nov_k = novel_kmers(named, seqs, kk)
+            meta[f"novel_{kk}mers"] = len(nov_k)
+            novel_rows.extend((kk, nm, pos, km) for nm, pos, km in nov_k)
+            if nov_k:
+                log(f"WARNING: {len(nov_k)} novel {kk}-mers at junctions. The "
+                    f"de Bruijn guarantee covers k={args.k} only. These are "
+                    f"candidate junctional neo-epitopes — screen them against "
+                    f"the human proteome before using these designs.")
+                for nm, pos, km in nov_k[:5]:
+                    log(f"  {nm}:{pos} {km}")
+            else:
+                log(f"no novel {kk}-mers")
+        if novel_rows:
+            # 'peptide' column so `epitope_triage.py selfcheck` consumes this directly.
+            nov_path = Path(str(prefix) + ".novel_kmers.tsv")
+            with nov_path.open("w") as fh:
+                fh.write("peptide\tk\tdesign\tposition\n")
+                for kk, nm, pos, km in novel_rows:
+                    fh.write(f"{km}\t{kk}\t{nm}\t{pos}\n")
+            meta["novel_kmers_tsv"] = str(nov_path)
+            log(f"wrote {nov_path} — run: epitope_triage.py selfcheck "
+                f"--candidates {nov_path}")
         meta["beam_width"] = args.beam
         log(f"wrote {fasta_path}")
 

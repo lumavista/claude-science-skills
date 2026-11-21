@@ -41,7 +41,28 @@ EVIDENCE_MARKER_RE = re.compile(
     r"\[evidence:((?:E[0-9]{3,8})(?:\s*,\s*E[0-9]{3,8})*)\]"
 )
 CITATION_MARKER_RE = re.compile(r"\[@(E[0-9]{3,8})\]")
-NUMERIC_RE = re.compile(r"(?<![A-Za-z])(?:[<>]=?\s*)?[0-9]+(?:\.[0-9]+)?%?")
+# A digit is only a numeric CLAIM when it is not part of an identifier or a
+# cross-reference. The lookbehind must exclude digits, dots and hyphens as well
+# as letters, or every domain identifier a life-science manuscript contains
+# (SARS-CoV-2, IL-6, CD4-positive) raises an error and the author stops running
+# the gate.
+NUMERIC_RE = re.compile(r"(?<![A-Za-z0-9.\-])(?:[<>]=?\s*)?[0-9]+(?:\.[0-9]+)?%?")
+# Cross-references are not claims: "As shown in Figure 2" carries no number.
+CROSSREF_RE = re.compile(
+    r"\b(?:Figure|Fig\.?|Figures|Table|Tables|Panel|Section|Appendix|"
+    r"Supplementary|Supplemental|Eq\.?|Equation|Ref\.?|Reference|Step|Chapter|"
+    r"Box|Note)\s*[A-Z]?[0-9]+(?:[.\-][0-9]+)*",
+    re.IGNORECASE,
+)
+# Prose that asserts something without registering a claim. Advisory only: it
+# cannot know whether a sentence needs evidence, so it warns and never errors.
+ASSERTION_RE = re.compile(
+    r"\b(?:demonstrat\w*|prov\w*|show\w*|confirm\w*|establish\w*|indicat\w*|"
+    r"suggest\w*|reveal\w*|binds?|inhibits?|induces?|causes?|protects?|"
+    r"correlat\w*|associat\w*|significant\w*|effective\w*|superior|"
+    r"outperform\w*)\b",
+    re.IGNORECASE,
+)
 CLAIM_KINDS = {"factual", "numeric", "method", "result", "interpretive", "declaration"}
 UNCERTAINTY = {"not_applicable", "not_estimated", "low", "moderate", "high"}
 ANALYSIS_INTENT = {"confirmatory", "exploratory", "descriptive", "not_applicable"}
@@ -222,14 +243,30 @@ def audit_markdown(
                     )
                 )
 
-        if NUMERIC_RE.search(line) and not line_claims:
-            issues.append(
-                issue(
-                    "error",
-                    "UNTAGGED_NUMERIC_CONTENT",
-                    location=f"line:{line_number}",
+        if not line_claims:
+            # Strip cross-references before looking for numbers, so a pointer to
+            # Figure 2 is not mistaken for a numeric result.
+            prose = CROSSREF_RE.sub(" ", line)
+            if NUMERIC_RE.search(prose):
+                issues.append(
+                    issue(
+                        "error",
+                        "UNTAGGED_NUMERIC_CONTENT",
+                        location=f"line:{line_number}",
+                    )
                 )
-            )
+            elif not line.lstrip().startswith(("#", ">", "|", "-", "*", "```")) \
+                    and ASSERTION_RE.search(prose):
+                # The numeric rule is blind to a claim with no digits, which is
+                # the easiest kind to leave unsupported. Warning, not error:
+                # this cannot tell an asserted finding from a framing sentence.
+                issues.append(
+                    issue(
+                        "warning",
+                        "UNTAGGED_ASSERTION",
+                        location=f"line:{line_number}",
+                    )
+                )
     return issues, used_claims
 
 

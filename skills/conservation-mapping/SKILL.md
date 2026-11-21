@@ -36,6 +36,18 @@ produces, so **report the effective N, not the raw sequence count** — the
 Immuno-Designer contract requires saying how many sequences a figure covers, and
 this is the honest version of that.
 
+Effective N is the Kish size `1/Σw²` **capped by the number of distinct
+sequences**, and the cap is load-bearing. Henikoff weighting has no variation to
+work with in an invariant column, so a panel of 200 identical sequences falls
+through to uniform weights and the uncapped Kish size reports effective N = 200:
+maximum confidence drawn from zero information, in exactly the number you are
+being told to trust. Capped, it reports 1. The script also refuses a
+single-sequence input outright and warns when every sequence in the panel is
+identical, because an all-invariant conservation track is uninformative rather
+than evidence of conservation. Expect the cap to bite on redundant panels: 200
+identical plus 3 divergent sequences scores 4, not the 11.8 the uncapped
+formula gives.
+
 ## Workflow
 
 ### 1. Assemble the panel
@@ -110,11 +122,17 @@ Conservation alone is not a target — buried residues are conserved because the
 fold requires it — so this intersects conservation with relative solvent
 accessibility and clusters survivors by CA distance.
 
-**Area is the number that matters**, not residue count: a typical Fab buries
-roughly 600–900 Å² and the script flags patches reaching that. A conserved
-surface fragmenting into small patches is a real property of the antigen, so
-report it rather than loosening thresholds until a large patch appears, and say
-so if you change `--entropy-max` or `--linkage`.
+**Area is the number that matters**, not residue count — but read the column for
+what it is. `summed_sasa_A2` is the total solvent-accessible area of the patch
+residues, which is an **upper bound** on what an antibody would bury, not the
+footprint itself. A typical Fab buries roughly 600–900 Å² of *buried* surface,
+about half of one partner's contact area, so comparing summed SASA directly
+against 600 over-calls patches as Fab-sized by a factor of about 2–3. The script
+flags at 1200 Å² summed SASA instead and says which quantity it is reporting.
+A conserved surface fragmenting into small patches is a real property of the
+antigen, so report it rather than loosening thresholds until a large patch
+appears — the script no longer suggests relaxing them — and say so if you change
+`--entropy-max` or `--linkage`.
 
 **For envelope glycoproteins this is incomplete on its own**: a conserved,
 exposed, well-sized patch can still be antibody-inaccessible under a dense

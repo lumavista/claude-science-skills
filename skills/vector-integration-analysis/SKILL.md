@@ -2,8 +2,11 @@
 name: vector-integration-analysis
 description: Characterises integrated vector sequence in stable cell lines from WGS or insertion-site sequencing — site count, per-construct copy number or VCN, copies per site, construct attribution when vectors share backbone, junction artefacts. Use for integration or insertion sites, junction or breakpoint tables, soft-clipped reads, clonal line characterisation, concatemers, or QC of a provider's report.
 license: MIT
+compatibility: Python 3.8+ and no third-party packages — every stage is standard library only, runs offline, and needs no credentials. The optional .docx export needs cairosvg or an `rsvg-convert` binary; without one the HTML and Markdown deliverables are still produced and the docx is skipped with a note. No GPU route: every stage is IO- or arithmetic-bound.
 metadata:
+  version: "1.1"
   skill-author: LumaVista.BIO
+  last-reviewed: "2026-11-21"
 ---
 
 # Vector integration analysis for stable cell lines

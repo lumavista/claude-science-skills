@@ -452,6 +452,14 @@ def t_caveats(I: Inputs, arg: str) -> str:
     for s, sd in ((I.cn or {}).get("samples") or {}).items():
         for n in (sd.get("architecture") or {}).get("notes") or []:
             rows.append(["copy_number.py, %s architecture" % s, n])
+        # A read-count baseline biases every copy number low. copy_number.py
+        # now promotes this into its own caveats, but read it here too: this
+        # table sits directly under the summary that prints the biased number,
+        # and it must never say "no caveat" while one applies.
+        if sd.get("baseline_source") == "read count" and sd.get("baseline_note"):
+            note = "%s -- %s" % (s, sd["baseline_note"])
+            if not any(r[1].endswith(sd["baseline_note"]) for r in rows):
+                rows.append(["copy_number.py, %s baseline" % s, note])
     for c in (I.summary or {}).get("caveats") or []:
         rows.append(["reconcile_sites.py", c])
     if I.cn is None and I.summary is None:

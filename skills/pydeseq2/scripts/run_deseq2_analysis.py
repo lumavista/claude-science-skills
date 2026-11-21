@@ -184,6 +184,28 @@ def run_statistical_tests(dds, contrast, alpha=0.05, shrink_lfc=True, inference=
     print(f"  Contrast: {contrast}")
     print(f"  Significance threshold: {alpha}")
 
+    # Residual df is not replication: a 2-vs-1 design (3 samples, 2 coefficients)
+    # and a 2-vs-2 design both clear run_deseq2's rank and df checks, and the
+    # resulting significant_genes.csv carries no trace of how few samples it
+    # rested on. Count samples per tested level and state it.
+    level_counts = dds.obs[contrast[0]].value_counts()
+    tested_levels = [lvl for lvl in contrast[1:] if lvl in level_counts.index]
+    print("  Samples per tested level:")
+    for lvl in tested_levels:
+        print(f"    {contrast[0]}={lvl}: {int(level_counts[lvl])}")
+    smallest = min((int(level_counts[lvl]) for lvl in tested_levels), default=0)
+    if smallest < 2:
+        raise ValueError(
+            f"Contrast {contrast} has a level with {smallest} sample(s). "
+            "Differential expression across replicates is undefined below 2 per "
+            "group: dispersion cannot be estimated from a single sample."
+        )
+    if smallest < 4:
+        print(f"  WARNING: smallest tested group has {smallest} samples. At 4 per "
+              "group and donor SD 0.35, recovery of true log2FC 1.0 was ~34% and "
+              "log2FC 0.5 ~0%, so a gene that is NOT called is uninformative "
+              "rather than unchanged. Report group sizes with every conclusion.")
+
     ds = DeseqStats(
         dds,
         contrast=contrast,
@@ -252,6 +274,8 @@ def save_results(ds, dds, output_dir):
         "size_factors_fit_type_requested": getattr(dds, "size_factors_fit_type", None),
         "retained_genes": len(ds.results_df),
         "contrast": list(ds.contrast),
+        "samples_per_level": {str(k): int(v) for k, v in
+                              dds.obs[ds.contrast[0]].value_counts().items()},
         "shrink_coefficient": getattr(ds, "shrink_coeff", None),
         "pvalues_and_stat": "unshrunken Wald test",
         "versions": {name: version(name) for name in ("pydeseq2", "anndata", "numpy", "pandas")},

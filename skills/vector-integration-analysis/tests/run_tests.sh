@@ -1440,6 +1440,23 @@ grep -q "^OK$" mf_copies_check.log \
   || { bad "--copies under --run"; cat mf_copies_check.log mf_copies.log; }
 
 echo
+echo "== Stage 3/4 arithmetic: test_arithmetic.py =="
+# Formula-level regressions. The cases here are wrong biological numbers that
+# passed a fully green run of everything above: this suite drives the pipeline
+# end to end, so an error inside a formula survives it as long as the pipeline
+# still runs. Asserting on the formulas directly is what catches those.
+"$PY" "$HERE/test_arithmetic.py" >arith.log 2>&1; arith_rc=$?
+grep -E "FAIL" arith.log
+ap="$(sed -n 's/.*test_arithmetic.py: \([0-9]*\) passed.*/\1/p' arith.log | tail -1)"
+af="$(sed -n 's/.*test_arithmetic.py: [0-9]* passed, \([0-9]*\) failed.*/\1/p' arith.log | tail -1)"
+if [ -n "$ap" ] && [ -n "$af" ]; then
+  PASS=$((PASS+ap)); FAIL=$((FAIL+af))
+  echo "  test_arithmetic.py: $ap passed, $af failed (counted below)"
+else
+  bad "test_arithmetic.py did not report a result (exit $arith_rc)"; tail -5 arith.log
+fi
+
+echo
 echo "== Host stage: test_host.sh =="
 bash "$HERE/test_host.sh" >host_suite.log 2>&1; host_rc=$?
 grep -E "FAIL" host_suite.log

@@ -39,13 +39,48 @@ class FoldingEnvironmentError(Exception):
     pass
 
 
+def detect_esm_package() -> str | None:
+    """Which package owns the `esm` import name here: 'biohub', 'fair-esm', None.
+
+    This matters more than it looks. Both distributions import as `esm` and must
+    never share an environment (see SKILL.md). They provide DIFFERENT APIs, and
+    this script needs both kinds:
+
+      * the hosted route needs Biohub `esm` (esm.sdk.esmfold2_client)
+      * the local routes below call esm.pretrained.esmfold_v1, which is the
+        LEGACY fair-esm API and does not exist in Biohub esm
+
+    So in any single environment some routes are structurally unavailable, and
+    saying which is the difference between an actionable error and the old
+    message, which blamed a missing SDK for an API that was never there.
+    """
+    try:
+        import esm  # noqa: F401
+    except ImportError:
+        return None
+    try:
+        import esm.sdk  # noqa: F401
+        return "biohub"
+    except ImportError:
+        pass
+    try:
+        import esm.pretrained  # noqa: F401
+        return "fair-esm"
+    except ImportError:
+        return None
+
+
 def detect_environment() -> Dict[str, Any]:
     """Detect current environment and available folding methods."""
+    pkg = detect_esm_package()
     info = {
         "platform": platform.system(),
         "has_api_key": "ESM_API_KEY" in os.environ,
         "api_key": os.environ.get("ESM_API_KEY", "").startswith("esm_"),
-        "can_use_hosted": "ESM_API_KEY" in os.environ,
+        "esm_package": pkg,
+        # The hosted route needs the Biohub SDK as well as a key. A key alone
+        # with fair-esm installed cannot reach it.
+        "can_use_hosted": "ESM_API_KEY" in os.environ and pkg in ("biohub", None),
         "can_use_local": False,
         "wsl2_available": False,
         "wsl2_python": None,
@@ -120,74 +155,60 @@ def fold_with_hosted_api(
 
     print(f"[fold_with_fallback] Using Biohub hosted API: {model}")
 
-    fold_input = StructurePredictionInput(
-        sequences=[
-            ProteinInput(id=seq["id"], sequence=seq["seq"])
-            for seq in sequences
-        ]
-    )
+    # ONE REQUEST PER SEQUENCE. Packing every sequence into a single
+    # StructurePredictionInput folds them as chains of one complex, which is a
+    # different scientific question: independent monomers acquire interchain
+    # contacts that do not exist, and `result.complex` is then the whole
+    # assembly, so each record's "pdb" was previously the full multi-chain
+    # complex rather than that sequence's structure. The skill's own example
+    # folds a wild type and a point variant together, which would have produced
+    # a WT-variant heterodimer for both.
+    import os.path
+    import tempfile
 
+    outputs = []
     with esmfold2_client(
         model=model,
         url="https://biohub.ai",
         token=api_key,
         request_timeout=timeout,
     ) as client:
-        result = client.fold_all_atom(fold_input, config=FoldingConfig())
-
-    if isinstance(result, ESMProteinError):
-        raise FoldingEnvironmentError(f"Biohub API error: {result}")
-
-    # Convert results to unified format
-    # MolecularComplex has per-residue arrays: plddt (0-1 scale), chain_id, sequence
-    # All sequences are folded as chains in a single complex
-    outputs = []
-
-    import tempfile
-
-    # Get per-residue metrics (plddt comes as 0-1, convert to 0-100)
-    plddt_values = result.complex.plddt * 100 if result.complex.plddt is not None else None
-    chain_ids = result.complex.chain_id if hasattr(result.complex, "chain_id") else None
-
-    # Extract per-chain metrics by chain_id
-    for i, seq in enumerate(sequences):
-        target_chain = i  # Chain index in the output
-
-        if chain_ids is not None:
-            # Find residues for this chain
-            chain_mask = chain_ids == target_chain
-            chain_plddt = plddt_values[chain_mask] if plddt_values is not None else None
-        else:
-            # Single sequence or no chain info; use full plddt
-            chain_plddt = plddt_values
-
-        # Verify sequence length matches
-        if chain_plddt is not None:
-            predicted_length = len(chain_plddt)
-            if predicted_length != len(seq["seq"]):
+        for seq in sequences:
+            fold_input = StructurePredictionInput(
+                sequences=[ProteinInput(id=seq["id"], sequence=seq["seq"])]
+            )
+            result = client.fold_all_atom(fold_input, config=FoldingConfig())
+            if isinstance(result, ESMProteinError):
                 raise FoldingEnvironmentError(
-                    f"Sequence {seq['id']}: predicted {predicted_length} residues, "
-                    f"but input was {len(seq['seq'])} residues"
+                    f"Biohub API error for {seq['id']}: {result}"
                 )
 
-        # Save structure for this sequence
-        # Note: result.complex.to_pdb() doesn't exist; use to_protein_complex().to_pdb(path)
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".pdb", delete=False) as f:
-            pdb_path = f.name
+            # plddt arrives on a 0-1 scale; report 0-100 as everything else does.
+            plddt = result.complex.plddt
+            plddt_values = plddt * 100 if plddt is not None else None
+            if plddt_values is not None and len(plddt_values) != len(seq["seq"]):
+                raise FoldingEnvironmentError(
+                    f"Sequence {seq['id']}: predicted {len(plddt_values)} "
+                    f"residues, but input was {len(seq['seq'])} residues"
+                )
 
-        result.complex.to_protein_complex().to_pdb(pdb_path)
-        with open(pdb_path, "r") as f:
-            pdb_str = f.read()
+            # Temp file in a directory that is removed; the previous
+            # NamedTemporaryFile(delete=False) leaked one PDB per sequence.
+            with tempfile.TemporaryDirectory() as tmpdir:
+                pdb_path = os.path.join(tmpdir, f"{seq['id']}.pdb")
+                result.complex.to_protein_complex().to_pdb(pdb_path)
+                with open(pdb_path, "r") as fh:
+                    pdb_str = fh.read()
 
-        outputs.append({
-            "id": seq["id"],
-            "pdb": pdb_str,
-            "plddt": chain_plddt.tolist() if chain_plddt is not None else None,
-            "plddt_mean": float(chain_plddt.mean()) if chain_plddt is not None else None,
-            "device": "biohub",
-            "model": model,
-            "length": len(seq["seq"]),
-        })
+            outputs.append({
+                "id": seq["id"],
+                "pdb": pdb_str,
+                "plddt": plddt_values.tolist() if plddt_values is not None else None,
+                "plddt_mean": float(plddt_values.mean()) if plddt_values is not None else None,
+                "device": "biohub",
+                "model": model,
+                "length": len(seq["seq"]),
+            })
 
     return outputs
 
@@ -319,16 +340,18 @@ def fold_with_fallback(
                 "  export ESM_API_KEY=esm_..."
             )
 
-    # Route 2: Prefer hosted API if available
+    # Route 2: Prefer hosted API if available.
+    # A failure here falls THROUGH to the next route. It used to re-raise unless
+    # force_local was set, which meant the function named "fold_with_fallback"
+    # had no fallback at all.
+    failures: List[str] = []
     if env["can_use_hosted"]:
         try:
             return fold_with_hosted_api(sequences, model=model)
         except Exception as e:
+            failures.append(f"hosted API: {e}")
             print(f"[fold_with_fallback] Hosted API failed: {e}", file=sys.stderr)
-            if force_local:
-                print("[fold_with_fallback] Falling back to local...", file=sys.stderr)
-            else:
-                raise
+            print("[fold_with_fallback] Trying local routes...", file=sys.stderr)
 
     # Route 3: Try WSL2 if available
     if env["wsl2_available"] and env["wsl2_python"]:
@@ -339,43 +362,64 @@ def fold_with_fallback(
                 device=device,
             )
         except Exception as e:
+            failures.append(f"WSL2: {e}")
             print(f"[fold_with_fallback] WSL2 folding failed: {e}", file=sys.stderr)
-            if not force_local:
-                raise
 
-    # Route 4: Native Linux/Mac
+    # Route 4: Native Linux/Mac. NOTE: this route calls the LEGACY fair-esm API
+    # (esm.pretrained.esmfold_v1), which does not exist in the Biohub esm SDK.
+    # Diagnose that explicitly instead of reporting a missing SDK.
     if platform.system() in ("Linux", "Darwin"):
-        try:
-            from esm.models.esm_fold_v1 import ESMFold
-            from esm.pretrained import esmfold_v1
-        except ImportError as e:
-            raise FoldingEnvironmentError(
-                f"esm SDK not available for local folding: {e}"
-            ) from e
+        pkg = env.get("esm_package")
+        if pkg == "biohub":
+            failures.append(
+                "native local: this route needs the legacy fair-esm package "
+                "(esm.pretrained.esmfold_v1); this environment has the Biohub "
+                "esm SDK, which does not provide that API. The two cannot share "
+                "an environment -- fold through the hosted route, or install "
+                "fair-esm in a separate env."
+            )
+        elif pkg is None:
+            failures.append(
+                "native local: no package provides the `esm` import name. "
+                "Install fair-esm for local ESMFold, or the Biohub esm SDK plus "
+                "ESM_API_KEY for hosted folding."
+            )
+        else:
+            try:
+                from esm.models.esm_fold_v1 import ESMFold  # noqa: F401
+                from esm.pretrained import esmfold_v1
+            except ImportError as e:
+                raise FoldingEnvironmentError(
+                    f"fair-esm is installed but its ESMFold API is unavailable: {e}"
+                ) from e
 
-        print(f"[fold_with_fallback] Using local {platform.system()} folding on {device}")
-        model_obj = esmfold_v1(device=device)
-        outputs = []
+            print(f"[fold_with_fallback] Using local {platform.system()} "
+                  f"folding on {device} (fair-esm)")
+            model_obj = esmfold_v1(device=device)
+            outputs = []
 
-        for seq in sequences:
-            print(f"Folding {seq['id']}...", file=sys.stderr)
-            structure = model_obj.infer_pdb(seq["seq"])
-            plddt = getattr(structure, "plddt", None)
+            for seq in sequences:
+                print(f"Folding {seq['id']}...", file=sys.stderr)
+                structure = model_obj.infer_pdb(seq["seq"])
+                plddt = getattr(structure, "plddt", None)
 
-            outputs.append({
-                "id": seq["id"],
-                "pdb": str(structure),
-                "plddt": plddt.tolist() if plddt is not None else None,
-                "plddt_mean": float(plddt.mean()) if plddt is not None else None,
-                "device": device,
-                "model": model,
-            })
+                outputs.append({
+                    "id": seq["id"],
+                    "pdb": str(structure),
+                    "plddt": plddt.tolist() if plddt is not None else None,
+                    "plddt_mean": float(plddt.mean()) if plddt is not None else None,
+                    "device": device,
+                    "model": model,
+                })
 
-        return outputs
+            return outputs
 
-    # Route 5: No viable path
+    # Route 5: No viable path. Report every route that was tried and why it
+    # failed, rather than a generic platform message.
+    detail = ("\n\nRoutes attempted:\n  - " + "\n  - ".join(failures)) if failures else ""
     raise FoldingEnvironmentError(
-        f"Cannot fold proteins on {platform.system()}.\n\n"
+        f"Cannot fold proteins on {platform.system()} "
+        f"(esm package: {env.get('esm_package')}).{detail}\n\n"
         "Available options:\n"
         "  1. SET ESM_API_KEY for hosted folding (recommended, works in sandbox)\n"
         "     • Create key: https://biohub.ai/developer-console/api-keys\n"

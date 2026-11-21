@@ -66,8 +66,25 @@ Separate multiple evidence IDs with semicolons in CSV. Use inline Markdown marke
 Use exactly one claim per physical line. The audit checks the SHA-256 digest against
 that line after removing `[claim:...]`, `[evidence:...]`, and `[@E...]` markers
 and collapsing whitespace.
-It also validates source-manifest verification metadata and flags numeric content
-without a claim marker. See `evidence_workflow.md` for normalization and limits.
+It also validates source-manifest verification metadata and flags unregistered
+content. Two rules do that work:
+
+- `UNTAGGED_NUMERIC_CONTENT` (**error**) — a number on a line with no
+  `[claim:...]` marker. Domain identifiers and cross-references are exempt:
+  `SARS-CoV-2`, `IL-6`, `CD4-positive` and `Figure 2` do not trigger it, while
+  `rose 4.2-fold` does. Without those exemptions the gate errors on ordinary
+  life-science prose, and an author who cannot pass it stops running it.
+- `UNTAGGED_ASSERTION` (**warning**) — prose in a non-heading line that asserts
+  a finding (`demonstrates`, `proves`, `binds`, `significant`, …) with no claim
+  marker. The numeric rule is blind to a claim carrying no digits, which is the
+  easiest kind to leave unsupported: "Spike protein binds ACE2 with extremely
+  high affinity and this proves protection" has no number in it. Advisory by
+  design — the tool cannot tell an asserted result from a framing sentence, so
+  it never fails the run on this alone.
+
+Input failures report a `detail` field describing the input's shape (a missing
+header, a rejected suffix). It never contains manuscript text.
+See `evidence_workflow.md` for normalization and limits.
 
 ## Numeric and methods-results consistency
 

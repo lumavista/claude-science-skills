@@ -8,24 +8,32 @@ design service is close to free and routinely saves a round.
 
 Checks performed, per sequence:
 
-  free_cysteines      Unpaired Cys count. An odd count is the strong signal;
-                      free thiols drive disulfide scrambling, dimerisation and
-                      heterogeneity. Resurfacing creates these by accident.
+  cysteines, cys_odd  Cys count, and whether it is odd. An odd count is the
+                      strong signal; free thiols drive disulfide scrambling,
+                      dimerisation and heterogeneity. Resurfacing creates these
+                      by accident.
   n_glyc_sequons      N-X-S/T, X != P. Flagged as ADDED when a parent is given
                       and the sequon is absent there — surface redesign creates
                       unintended glycosylation sites routinely, and an added
                       sequon on or beside a target epitope can mask it.
-  deamidation         NG, NS, NT motifs. NG is the fast one.
-  isomerisation       DG, DS motifs.
+  deamidation         NG, NS, NT motifs — the high-risk subset. NG is the fast
+                      one. NN, NH and NA are also reported liabilities in the
+                      literature and are NOT screened here.
+  isomerisation       DG, DS motifs — likewise the high-risk subset; DD, DT and
+                      DH are not screened.
   oxidation           Met and Trp counts (exposure matters, but sequence is the
                       screen).
   hydrophobic_patches Windows of high local hydrophobicity, an aggregation
                       proxy.
   gravy               Grand average of hydropathy (Kyte-Doolittle).
-  pI                  Isoelectric point. Constructs with pI near the
-                      purification or formulation pH aggregate; report it
+  pI                  Isoelectric point, from Lehninger/CRC side-chain pKa with
+                      EMBOSS termini (not EMBOSS Epk.dat, so it will not
+                      reproduce EMBOSS `iep` exactly). Constructs with pI near
+                      the purification or formulation pH aggregate; report it
                       against the buffer rather than in the abstract.
-  rk_ratio            Charge composition, context for pI.
+
+Non-standard residues (X, U, B, Z, ...) are rejected rather than stripped: every
+column here is a position, and dropping a residue shifts all of them silently.
 
 Every flag is a liability to weigh, not a verdict. A construct with three
 deamidation motifs is not disqualified — it is a construct whose stability
@@ -56,8 +64,11 @@ KD = {  # Kyte & Doolittle hydropathy
     "S": -0.8, "T": -0.7, "W": -0.9, "Y": -1.3, "V": 4.2,
 }
 
-# EMBOSS pKa set — stated explicitly because pI values differ by a few tenths
-# between references and a bare number invites false precision.
+# Lehninger/CRC free-amino-acid side-chain pKa, with EMBOSS terminal values.
+# Stated explicitly because pI differs by a few tenths between references and a
+# bare number invites false precision. NOT the EMBOSS Epk.dat side-chain set
+# (C 8.5, D 3.9, E 4.1, H 6.5, K 10.8, R 12.5), so do not expect these pI
+# values to reproduce EMBOSS `iep`.
 PKA_SIDE = {"D": 3.65, "E": 4.25, "C": 8.18, "Y": 10.07, "H": 6.00,
             "K": 10.53, "R": 12.48}
 PKA_NTERM, PKA_CTERM = 8.6, 3.6
@@ -93,8 +104,22 @@ def read_fasta(path: Path) -> list[tuple[str, str]]:
                 chunks.append(line)
     if name is not None:
         records.append((name, "".join(chunks)))
-    out = [(n, "".join(c for c in s.upper() if c in VALID_AA))
-           for n, s in records]
+    # Stripping non-standard residues silently shifts every position this
+    # script reports. Every output column is a position or a span, so a single
+    # X before a sequon moves that sequon's reported index by one with no
+    # indication. Refuse instead.
+    offenders = []
+    for n, s in records:
+        bad = sorted({c for c in s.upper() if c not in VALID_AA})
+        if bad:
+            offenders.append((n, bad, sum(s.upper().count(c) for c in bad)))
+    if offenders:
+        detail = "; ".join(f"{n}: {''.join(b)} x{k}" for n, b, k in offenders[:5])
+        die(f"non-standard residues in {path.name} ({detail}). Every column "
+            "this script reports is a position, and dropping residues shifts "
+            "all of them. Resolve or mask them first, keeping the length "
+            "unchanged.")
+    out = [(n, s.upper()) for n, s in records]
     out = [(n, s) for n, s in out if s]
     if not out:
         die(f"no usable sequences in {path}")
@@ -274,7 +299,7 @@ def main() -> None:
         "n_constructs": len(rows),
         "ph": args.ph,
         "hydropathy_scale": "Kyte-Doolittle",
-        "pka_set": "EMBOSS",
+        "pka_set": "Lehninger/CRC side chains, EMBOSS termini",
         "patch_window": args.patch_window,
         "patch_cutoff": args.patch_cutoff,
         "note": "sequence-level liabilities only; no structural or "
