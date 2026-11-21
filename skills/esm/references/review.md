@@ -33,7 +33,8 @@ all dependency licenses as MIT.
 
 ## Executed checks
 
-The suite in `tests/esm/` exercises a two-layer, 32-dimensional random ESMC model
+The upstream suite (not vendored into this repository) exercises a two-layer,
+32-dimensional random ESMC model
 on CPU. It checks native batch/individual equivalence, token axes and hidden
 states, residue-only pooling including NaN padding, malformed inputs and context
 length, legacy SDK output containers, tiny saved-checkpoint reload, and a
