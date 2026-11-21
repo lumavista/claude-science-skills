@@ -204,12 +204,26 @@ def block_depths(ident: Dict, mapping: str, depth: Dict[int, float],
             hi = z - trim if thi else z
         if hi < lo:
             continue
-        vals = [depth[p] for p in range(lo, hi + 1) if p in depth]
-        if not vals:
+        # A position absent from the depth file is a position at ZERO depth,
+        # not a position to exclude from the average. `samtools depth` without
+        # -a omits zero-depth bases, so averaging only the present positions
+        # silently deletes the evidence of a deletion: 700 uncovered bp of a
+        # 3000 bp class reported 2.00 copies/haploid where the truth was 1.53,
+        # with no caveat. Sum over the full span and count the span.
+        span = hi - lo + 1
+        observed = 0
+        total = 0.0
+        for p in range(lo, hi + 1):
+            v = depth.get(p)
+            if v is None:
+                continue
+            observed += 1
+            total += v
+        if observed == 0:
             continue
         out.append({"membership": list(b["membership"]), "start": a, "end": z,
-                    "lo": lo, "hi": hi, "mean": sum(vals) / len(vals),
-                    "bases": len(vals)})
+                    "lo": lo, "hi": hi, "mean": total / span,
+                    "bases": span, "observed_bases": observed})
     return out
 
 
@@ -490,6 +504,24 @@ def solve_measured(cfg: Dict, ident: Dict, sample: str, trim: int,
         return None          # some construct has neither: fall back, as before
 
     caveats: List[str] = []
+    # Positions missing from the depth file are now averaged in as zero, which
+    # is correct, but a file with many missing positions still means the caller
+    # ran `samtools depth` without -a. Say so: the user cannot otherwise tell a
+    # genuinely uncovered region from an omitted one, and that distinction is
+    # the difference between a deletion and a reporting artefact.
+    span_bp = sum(int(c.get("bases") or 0) for c in classes)
+    seen_bp = sum(int(c.get("observed_bases", c.get("bases") or 0))
+                  for c in classes)
+    if span_bp and seen_bp < 0.99 * span_bp:
+        caveats.append(
+            "DEPTH FILE INCOMPLETE: %d of %d positions in the measured classes "
+            "(%.1f%%) are absent from the depth file and were averaged in as "
+            "zero depth, which is what absence means. If the file was produced "
+            "without `samtools depth -a`, zero-coverage bases were omitted and "
+            "these means are correct only if every omitted base is genuinely "
+            "uncovered. Re-run with -a to remove the ambiguity; until then a "
+            "low mean here cannot be separated from a reporting artefact."
+            % (span_bp - seen_bp, span_bp, 100.0 * (span_bp - seen_bp) / span_bp))
     depths, source = _choose_depths(order, unique, wls, baseline, caveats)
     spread = unique_block_spread(ublocks, baseline)
     unique_bp = {n: spread[n]["retained_bp"] if n in spread else 0 for n in order}
@@ -700,7 +732,16 @@ def architecture(cfg: Dict, jrows: Dict[str, List[Dict]], mapping: str,
                                        "unknown whether arrays are possible"))
 
     n = out["copies_per_site"]
-    out["implied_sites"] = (round(copies / n, 2)
+    # `copies` is per HAPLOID genome; a site count is per cell. Stage 4's
+    # ceiling uses ceil(copies * ploidy / divisor) (reconcile_sites.caps) and
+    # SKILL.md states that form, so omitting ploidy here made implied_sites a
+    # factor of `ploidy` too small: a correct, self-consistent diploid line
+    # (4 single-copy loci = 2.0 copies/haploid) was reported as
+    # "EXCESS: 4 loci detected but the measured DNA only supports 2.0 (0.5x)",
+    # i.e. a correct result flagged as a 2x double-counting artefact, with
+    # remediation advice pointing at flank pairing.
+    ploidy = float(cfg.get("ploidy", 2))
+    out["implied_sites"] = (round(copies * ploidy / n, 2)
                             if n and copies is not None else None)
     return out
 
@@ -712,13 +753,26 @@ def flank_detection(cfg: Dict, coverage: float, flank_reads: int,
     for anchor in anchors:
         R = conversion_factor(coverage, cfg["read_length"], anchor)
         detected = flank_reads / R if R else None
-        sweep.append({
+        rate = (detected / (2 * implied_sites)
+                if detected and implied_sites else None)
+        entry = {
             "anchor": anchor,
             "reads_per_copy": round(R, 2),
             "flank_copies_detected": round(detected, 2) if detected else None,
-            "flank_detection_rate": (round(detected / (2 * implied_sites), 3)
-                                     if detected and implied_sites else None),
-        })
+            "flank_detection_rate": round(rate, 3) if rate is not None else None,
+        }
+        # A detection rate above 1 means more flanks were detected than the
+        # structure admits (2 per site). That is a unit or assumption
+        # inconsistency, not a sensitivity figure -- say so rather than
+        # printing an impossible fraction.
+        if rate is not None and rate > 1.05:
+            entry["note"] = (
+                "detection rate %.2f exceeds 1: more flank copies detected "
+                "than 2 per implied site allows. Suspect the anchor "
+                "assumption, the conversion factor, or an implied-site count "
+                "in the wrong unit." % rate
+            )
+        sweep.append(entry)
     return sweep
 
 
@@ -1394,6 +1448,17 @@ def run_stage(args: argparse.Namespace) -> int:
             anchors)
         result["samples"][sample] = measured
         caveats += [c for c in sample_caveats if c not in caveats]
+        # A read-count baseline biases every copy number LOW (the note says
+        # "typically runs high and biases copy numbers low"). That note used to
+        # land only on stderr and in a bullet below the section 6 table, so
+        # result["caveats"] stayed empty, the markdown claimed "All copy
+        # numbers below are measured from per-base depth, not inferred", and
+        # report.html's caveat table said no caveat was raised -- directly
+        # above the biased number. It is a caveat; record it as one.
+        if measured.get("baseline_source") == "read count":
+            note = measured.get("baseline_note")
+            if note and note not in caveats:
+                caveats.append("Sample %s -- %s" % (sample, note))
 
     result["caveats"] = caveats
     checks = stage_checks(Checks("copy_number", args.accept), result,

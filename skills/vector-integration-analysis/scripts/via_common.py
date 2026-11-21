@@ -24,6 +24,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import sys
 from dataclasses import asdict, dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -920,12 +921,38 @@ def read_depth_file(path: str, contig: Optional[str] = None) -> Dict[int, float]
         raise ValueError("%s: no usable rows; expected `samtools depth` output "
                          "(contig, position, depth)" % path)
     if contig is not None:
+        # Exact match wins. The previous single pass accepted a bidirectional
+        # substring match on a first-wins iteration order, so a file holding
+        # both `pAlphaX_v2` (99x) and `pAlphaX` (5x) answered a request for
+        # `pAlphaX` with 99x -- a 20x wrong copy number, silently. Near-miss
+        # contig names (pAlpha, pAlpha_linearized, pAlpha_backbone) are routine
+        # here, which is exactly design rule #2 at the top of this module.
         for name, d in per.items():
-            if norm(name) == norm(contig) or norm(contig) in norm(name) \
-                    or norm(name) in norm(contig):
+            if norm(name) == norm(contig):
                 return d
+        partial = [(name, d) for name, d in per.items()
+                   if norm(contig) in norm(name) or norm(name) in norm(contig)]
+        if len(partial) == 1:
+            name, d = partial[0]
+            sys.stderr.write(
+                "[via] %s: no contig exactly named %r; using the one partial "
+                "match %r\n" % (path, contig, name))
+            return d
+        if len(partial) > 1:
+            raise ValueError(
+                "%s: contig %r matches %d contigs by substring (%s) and none "
+                "exactly. Name the contig exactly as it appears in the depth "
+                "file -- guessing here silently changes the copy number."
+                % (path, contig, len(partial), sorted(n for n, _ in partial)))
         raise ValueError("%s: contig %r not present; file holds %s"
                          % (path, contig, sorted(per)))
+    if len(per) > 1:
+        chosen = max(per, key=lambda k: len(per[k]))
+        sys.stderr.write(
+            "[via] %s: no contig requested and the file holds %d contigs (%s); "
+            "using %r, the one with the most rows\n"
+            % (path, len(per), sorted(per), chosen))
+        return per[chosen]
     return max(per.values(), key=len)
 
 
