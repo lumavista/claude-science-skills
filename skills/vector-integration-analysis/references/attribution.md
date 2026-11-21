@@ -140,18 +140,31 @@ Three properties of this step matter:
   The whole premise of the tier is that the copy number sources the site.
 
 `--min-copies-per-site` is the fewest copies a real site is assumed to carry,
-and it is the ceiling's divisor. The default 1.0 is the most permissive honest
-value and the only one valid for integrase or transposase delivery. On a
-concatemer line, where each site holds an array, pass the measured copies per
-site from `copy_number.py`; that is what makes the ceiling binding rather than
-nominal.
+and it is the ceiling's divisor. 1.0 is the most permissive honest value and
+the only one valid for integrase or transposase delivery. On a concatemer
+line, where each site holds an array, the measured copies per site from
+`copy_number.py` is what makes the ceiling binding rather than nominal.
 
-The script never takes that value from the copy-number stage by itself, because
-changing the divisor changes every site range and that is a decision, not a
-derivation. What it does instead, when the run manifest carries a measured
-copies-per-site above 1 and the divisor is still 1, is raise the
-`ceiling_divisor` check naming the measured value. Rerun with it, or keep 1 and
-say in the report that the ceiling is nominal.
+When the script is given the copy-number JSON, the divisor defaults to that
+measurement: `architecture.copies_per_site` of the sample in use (`--cn-sample`,
+else the smallest over the samples, the counterpart of taking the largest copy
+number). Single-copy delivery reports 1 there, so nothing changes for it. With
+no JSON, or a JSON that carries no estimate, the divisor is 1. An explicit
+`--min-copies-per-site` always wins. The summary's parameter line and the
+`ceiling_divisor` check say which of these applied.
+
+Two things follow from the measured default. The estimate is an *average*
+over sites, so the ceiling it gives is the site count the measured DNA implies
+at that array size, not a bound that holds whatever the arrays look like: a
+line with one long array and several single copies can hold more sites than
+it. `--min-copies-per-site 1` restores the unconditional bound. And a tighter
+ceiling can now be contradicted by sequence-level evidence, which fails
+`ceiling_contradiction`; that is the measurement and the called sites
+disagreeing, and is worth reading rather than accepting.
+
+If the divisor is 1 anyway (passed explicitly, or only the run manifest holds
+the measurement) while the copy-number stage measured more than 1, the
+`ceiling_divisor` check warns and names the measured value.
 
 ### (d) unresolved
 
@@ -209,7 +222,7 @@ sample name.
 | `--min-samples` | 2 | independent samples a called locus needs |
 | `--end-tol` | 3 | tolerance for "at a declared vector end" |
 | `--ploidy` | from the copy-number JSON, else 2 with a caveat | scales every ceiling |
-| `--min-copies-per-site` | 1.0 | the ceiling's divisor |
+| `--min-copies-per-site` | the copy-number JSON's measured copies per site, else 1.0 | the ceiling's divisor |
 | `--cn-margin` | 2.0 | how far the top candidate must lead before the ceiling tier attributes |
 
 Raising `--cn-margin` moves loci from `copy-ceiling` to `unresolved`: more

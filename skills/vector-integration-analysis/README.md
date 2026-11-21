@@ -260,9 +260,9 @@ blocking condition exits 3 under `--strict`, exits 0 without it, reaches the
 report as a banner and the JSON as a status, and unblocks under `--accept`; and
 that a sample with depth is not spoiled by a sample without it; that the
 shortfall between a construct's measured DNA and its called sites is reported
-per construct rather than for the primary mapping alone; and that a measured
-copies-per-site value is flagged to the caller but never
-applied to the ceiling on its own.
+per construct rather than for the primary mapping alone; and that the ceiling's
+divisor is the copies per site the copy-number JSON measured, falls back to 1
+when there is no estimate, and yields to an explicit `--min-copies-per-site`.
 
 `tests/test_host.sh` covers the host stage offline, against a synthetic
 catalogue cache. It checks that a RefSeq accession is inferred, that
@@ -273,8 +273,10 @@ warn. It checks that the assembly's `genome_size` reproduces the declared
 one's copy numbers, and that the annotation only appends columns, leaving the
 called table otherwise byte-identical. Finally it checks that exonic,
 intronic and intergenic sites are labelled correctly, that `make_figures.py
---run` draws the genome overview from the host `.fai`, and that a declared
-genome size contradicting the assembly fails.
+--run` draws the genome overview from the host `.fai`, that the overview
+carries gene labels and the species and assembly when the host stage supplied
+them and is the plain `.fai` figure when it did not, that crowded labels never
+overlap, and that a declared genome size contradicting the assembly fails.
 
 ## Reference material
 

@@ -896,7 +896,7 @@ assert_has "refusal says the input would be overwritten" mf_clobber.log \
   "refusing to overwrite the input"
 
 echo
-echo "== Run manifest: a nominal ceiling is said out loud, never applied =="
+echo "== Run manifest: the ceiling divisor comes from the measured copies per site =="
 # pAlpha's line has internal array junctions, so Stage 3 measures >1 copies
 # per site. Stage 4 must flag that the default divisor of 1 leaves the ceiling
 # nominal -- and must NOT change the divisor on its own.
@@ -929,26 +929,80 @@ EOF
 grep -q "^OK$" mfa_same.log \
   && ok "three-construct manifest run reproduces the hand-written config's numbers" \
   || { bad "three-construct manifest run changed a number"; cat mfa_same.log; }
+# The ceiling's divisor defaults to the copies per site the copy-number JSON
+# measured (its architecture block), so a concatemer line's ceiling reflects
+# the arrays instead of counting every copy as its own site.
 expect_exit "Stage 4 runs with the default divisor" 0 mfa4.log \
   "$PY" "$SCRIPTS/reconcile_sites.py" --run mfa/run.json --min-samples 1 --strict
-assert_has "nominal ceiling raised as a caveat with the measured value" \
-  mfa/site_summary.md "left at 1, but the copy-number stage measured"
-got=$("$PY" -c "
-import json, math
-d = json.load(open('mfa/site_summary.json'))
-st = [c['status'] for c in d['checks'] if c['id'] == 'ceiling_divisor'][0]
-cn = d['per_construct']['pAlpha']['copies_per_haploid']
-print(st, d['parameters']['min_copies_per_site'],
-      d['per_construct']['pAlpha']['ceiling'] == math.ceil(cn * 2 / 1.0))")
-[ "$got" = "warn 1.0 True" ] \
-  && ok "the measured copies per site is flagged but not applied to the ceiling" \
+divisor() { # divisor <site_summary.json> <construct>: status, divisor, which ceiling
+  "$PY" - "$1" "$2" <<'EOF'
+import json, math, sys
+d = json.load(open(sys.argv[1]))
+arch = json.load(open("mfa/accounting.json"))["samples"]["parental"]["architecture"]
+cps = arch["copies_per_site"]
+assert cps > 1, cps
+p, c = d["parameters"], d["per_construct"][sys.argv[2]]
+cn = c["copies_per_haploid"]
+loose, tight = math.ceil(cn * 2 / 1.0), math.ceil(cn * 2 / cps)
+assert tight < loose, (tight, loose)
+st = [x["status"] for x in d["checks"] if x["id"] == "ceiling_divisor"][0]
+which = {tight: "measured", loose: "one"}.get(c["ceiling"], "other")
+print(st, "measured" if p["min_copies_per_site"] == cps
+      else p["min_copies_per_site"], which)
+EOF
+}
+got=$(divisor mfa/site_summary.json pAlpha)
+[ "$got" = "pass measured measured" ] \
+  && ok "ceiling uses the architecture copies per site from the copy-number JSON" \
   || bad "ceiling divisor handling was '$got'"
+assert_has "the report says where the divisor came from" mfa/site_summary.md \
+  "min-copies-per-site [0-9.]+ \(copies per site measured by copy_number.py in sample parental\)"
+assert_has "and so does the ceiling_divisor check" mfa/site_summary.json \
+  "ceiling divisor [0-9.]+ taken from the copies per site measured"
+# no estimate to take: the divisor falls back to 1
+cn=$("$PY" -c "import json;print(json.load(open('mfa/site_summary.json'))['per_construct']['pAlpha']['copies_per_haploid'])")
+"$PY" "$SCRIPTS/reconcile_sites.py" --identity mfa/identity.json \
+  --loci pAlpha=mfa/loci_pAlpha.tsv --copies pAlpha="$cn" --ploidy 2 \
+  --min-samples 1 --summary mfa/nojson.json --md mfa/nojson.md >mfa6.log 2>&1 \
+  || { bad "run without a copy-number JSON"; cat mfa6.log; }
+got=$(divisor mfa/nojson.json pAlpha)
+[ "$got" = "pass 1.0 one" ] \
+  && ok "no copy-number JSON: the divisor falls back to 1" \
+  || bad "fallback without a copy-number JSON was '$got'"
+"$PY" -c "
+import json
+d = json.load(open('mfa/accounting.json'))
+for s in d['samples'].values():
+    s['architecture']['copies_per_site'] = None
+json.dump(d, open('mfa/accounting_noarch.json', 'w'))"
+"$PY" "$SCRIPTS/reconcile_sites.py" --identity mfa/identity.json \
+  --loci pAlpha=mfa/loci_pAlpha.tsv --copy-number mfa/accounting_noarch.json \
+  --ploidy 2 --min-samples 1 --summary mfa/noarch.json --md mfa/noarch.md \
+  >mfa7.log 2>&1 || { bad "run with a JSON that has no estimate"; cat mfa7.log; }
+got=$(divisor mfa/noarch.json pAlpha)
+[ "$got" = "pass 1.0 one" ] \
+  && ok "copy-number JSON without an estimate: the divisor falls back to 1" \
+  || bad "fallback without an estimate was '$got'"
+# the explicit flag still overrides, in both directions
+"$PY" "$SCRIPTS/reconcile_sites.py" --run mfa/run.json --min-samples 1 \
+  --min-copies-per-site 1 --summary mfa/one.json --md mfa/one.md \
+  --out-called mfa/one.tsv --out-subthreshold mfa/one_sub.tsv \
+  >mfa8.log 2>&1 || bad "explicit divisor 1 run"
+got=$(divisor mfa/one.json pAlpha)
+[ "$got" = "warn 1.0 one" ] \
+  && ok "an explicit --min-copies-per-site 1 overrides the estimate, and is flagged" \
+  || bad "explicit divisor 1 was '$got'"
+assert_has "nominal ceiling raised as a caveat with the measured value" \
+  mfa/one.md "is 1, but the copy-number stage measured"
 "$PY" "$SCRIPTS/reconcile_sites.py" --run mfa/run.json --min-samples 1 \
   --min-copies-per-site 3 --summary mfa/explicit.json --md mfa/explicit.md \
   --out-called mfa/explicit.tsv --out-subthreshold mfa/explicit_sub.tsv \
   >mfa5.log 2>&1 || bad "explicit divisor run"
+got=$("$PY" -c "import json;print(json.load(open('mfa/explicit.json'))['parameters']['min_copies_per_site'])")
+[ "$got" = "3.0" ] && ok "an explicit --min-copies-per-site 3 overrides the estimate" \
+  || bad "explicit divisor 3 gave '$got'"
 assert_lacks "an explicit divisor silences the nominal-ceiling caveat" \
-  mfa/explicit.md "left at 1"
+  mfa/explicit.md "is 1, but the copy-number stage"
 
 echo
 echo "== Figures: make_figures.py =="
@@ -1072,6 +1126,8 @@ EOF
 grep -q "^OK$" figs_empty_check.log \
   && ok "no loci: all chromosomes drawn, zero ticks" \
   || { bad "no-loci overview"; cat figs_empty_check.log; }
+assert_lacks "no host stage, no gene table: no host context on the overview" \
+  figs/genome_overview.svg 'gene-label|data-gene|class="host |host_reference'
 
 # an input that exists but cannot be parsed is exit 2, not a skip
 printf 'not json\n' >broken.json
